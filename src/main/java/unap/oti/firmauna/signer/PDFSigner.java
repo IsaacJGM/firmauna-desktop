@@ -7,6 +7,7 @@ import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
+import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.PDSignature;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.SignatureInterface;
 import org.apache.pdfbox.pdmodel.interactive.digitalsignature.SignatureOptions;
@@ -62,35 +63,45 @@ public class PDFSigner {
 
             SignerImpl signer = new SignerImpl(cert, privateKey, chain);
             SignatureOptions signatureOptions = new SignatureOptions();
-            // RENIEC cert chain is ~7KB raw, but CMS encoding overhead can
-            // push it past 16KB. Reserve 32KB to be safe.
-            signatureOptions.setPreferredSignatureSize(32768);
-            System.out.println("[DEBUG] SignatureOptions reserved size: " + signatureOptions.getPreferredSignatureSize());
-            System.out.println("[DEBUG] SignerImpl class: " + signer.getClass().getName());
-            System.out.println("[DEBUG] PDFSigner classloader: " + PDFSigner.class.getClassLoader());
+            signatureOptions.setPreferredSignatureSize(16384);
             doc.addSignature(signature, signer, signatureOptions);
 
-            // Step 2: Add visible text stamp
+            // Step 2: Add visible stamp with logo + text
             if (page >= 0 && page < doc.getNumberOfPages()) {
                 PDPage pg = doc.getPage(page);
                 try (PDPageContentStream cs = new PDPageContentStream(
                         doc, pg, PDPageContentStream.AppendMode.APPEND, true, true)) {
 
-                    cs.beginText();
-                    cs.setFont(new PDType1Font(org.apache.pdfbox.pdmodel.font.Standard14Fonts.FontName.HELVETICA_BOLD), 8);
-                    cs.newLineAtOffset(x, y);
-                    cs.setLeading(11);
-                    for (String line : signerText.split("\n")) {
-                        cs.showText(line);
-                        cs.newLine();
+                    // Load logo from classpath
+                    PDImageXObject logo = null;
+                    try (InputStream is = PDFSigner.class.getClassLoader().getResourceAsStream("assets/LogoUNA.png")) {
+                        if (is != null) {
+                            logo = PDImageXObject.createFromByteArray(doc, is.readAllBytes(), "LogoUNA");
+                        }
                     }
-                    cs.endText();
 
                     // Draw border
                     cs.setStrokingColor(0, 0.3f, 0.6f);
                     cs.setLineWidth(1f);
                     cs.addRect(x - 3, y - 3, w, h);
                     cs.stroke();
+
+                    // Draw logo on the left side
+                    if (logo != null) {
+                        float logoSize = h - 10;
+                        cs.drawImage(logo, x + 5, y + 5, logoSize, logoSize);
+                    }
+
+                    // Draw text next to logo
+                    cs.beginText();
+                    cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD), 7);
+                    cs.newLineAtOffset(x + 65, y + h - 15);
+                    cs.setLeading(9);
+                    for (String line : signerText.split("\n")) {
+                        cs.showText(line);
+                        cs.newLine();
+                    }
+                    cs.endText();
                 }
             }
 
@@ -135,17 +146,17 @@ public class PDFSigner {
                         return stream;
                     }
 
-                    @Override
-                    public byte[] getSignature() {
-                        try {
-                            Signature sig = Signature.getInstance("SHA256withRSA");
-                            sig.initSign(privateKey);
-                            sig.update(stream.toByteArray());
-                            return sig.sign();
-                        } catch (Exception e) {
-                            throw new RuntimeException("Signature generation failed", e);
-                        }
+                @Override
+                public byte[] getSignature() {
+                    try {
+                        Signature sig = Signature.getInstance("SHA256withRSA");
+                        sig.initSign(privateKey);
+                        sig.update(stream.toByteArray());
+                        return sig.sign();
+                    } catch (Exception e) {
+                        throw new RuntimeException("Signature generation failed", e);
                     }
+                }
                 };
 
                 gen.addSignerInfoGenerator(new JcaSignerInfoGeneratorBuilder(
@@ -153,7 +164,11 @@ public class PDFSigner {
                     .build(signer, cert));
                 gen.addCertificates(certStore);
 
-                CMSSignedData signed = gen.generate(new CMSProcessableByteArray(bytes), true);
+                // encapsulate=false creates a DETACHED signature that does NOT
+                // embed the PDF content. With true (encapsulate), the entire PDF
+                // content is embedded, making the CMS signature huge (280KB+ for
+                // a real document) and impossible to reserve space for.
+                CMSSignedData signed = gen.generate(new CMSProcessableByteArray(bytes), false);
                 return signed.getEncoded();
             } catch (Exception e) {
                 throw new IOException("CMS signing failed", e);
