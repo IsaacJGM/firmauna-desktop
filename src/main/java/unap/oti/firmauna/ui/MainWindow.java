@@ -53,7 +53,7 @@ public class MainWindow {
     private X509Certificate cert;
     private PrivateKey privateKey;
     private java.security.cert.Certificate[] certChain;
-    private double sigX, sigY, sigW = 160, sigH = 55;
+    private double sigX, sigY, sigW = 220, sigH = 70;
 
     public MainWindow(Stage stage) {
         this.stage = stage;
@@ -250,7 +250,7 @@ public class MainWindow {
         if (positionCheck.isSelected()) {
             Platform.runLater(this::showSignaturePositioner);
         } else {
-            performSigning(0, 50, 700, 160, 55);
+            performSigning(0, 50, 700, 220, 70);
         }
     }
 

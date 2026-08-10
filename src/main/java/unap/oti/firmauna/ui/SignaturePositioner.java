@@ -54,23 +54,23 @@ public class SignaturePositioner {
         canvas.setOnMousePressed(e -> {
             double mx = e.getX();
             double my = e.getY();
-            if (mx >= boxX && mx <= boxX + 160 &&
-                my >= boxY && my <= boxY + 55) {
+            if (mx >= boxX && mx <= boxX + 220 &&
+                my >= boxY && my <= boxY + 70) {
                 dragging = true;
                 dragStartX = mx - boxX;
                 dragStartY = my - boxY;
             } else {
                 dragging = false;
-                boxX = Math.max(0, Math.min(mx - 80, canvas.getWidth() - 160));
-                boxY = Math.max(0, Math.min(my - 27, canvas.getHeight() - 55));
+                boxX = Math.max(0, Math.min(mx - 110, canvas.getWidth() - 220));
+                boxY = Math.max(0, Math.min(my - 35, canvas.getHeight() - 70));
                 redraw();
             }
         });
 
         canvas.setOnMouseDragged(e -> {
             if (dragging) {
-                boxX = Math.max(0, Math.min(e.getX() - dragStartX, canvas.getWidth() - 160));
-                boxY = Math.max(0, Math.min(e.getY() - dragStartY, canvas.getHeight() - 55));
+                boxX = Math.max(0, Math.min(e.getX() - dragStartX, canvas.getWidth() - 220));
+                boxY = Math.max(0, Math.min(e.getY() - dragStartY, canvas.getHeight() - 70));
                 redraw();
             }
         });
@@ -79,14 +79,14 @@ public class SignaturePositioner {
         okBtn.setStyle("-fx-background-color: #198754; -fx-text-fill: white;");
         okBtn.setOnAction(e -> {
             dialog.close();
-            callback.onPosition(boxX * 1.4, boxY * 1.6, 160, 55);
+            callback.onPosition(boxX * 1.4, boxY * 1.6, 220, 70);
         });
 
         Button cancelBtn = new Button("Cancelar");
         cancelBtn.setStyle("-fx-background-color: #6c757d; -fx-text-fill: white;");
         cancelBtn.setOnAction(e -> {
             dialog.close();
-            callback.onPosition(50, 700, 160, 55);
+            callback.onPosition(50, 700, 220, 70);
         });
 
         HBox buttons = new HBox(10, okBtn, cancelBtn);
@@ -135,8 +135,8 @@ public class SignaturePositioner {
         gc.setStroke(Color.DODGERBLUE);
         gc.setLineWidth(1.5);
         gc.setFill(Color.rgb(30, 144, 255, 0.15));
-        gc.fillRect(boxX, boxY, 160, 55);
-        gc.strokeRect(boxX, boxY, 160, 55);
+        gc.fillRect(boxX, boxY, 220, 70);
+        gc.strokeRect(boxX, boxY, 220, 70);
     }
 
     @FunctionalInterface

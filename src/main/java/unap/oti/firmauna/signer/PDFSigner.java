@@ -95,8 +95,8 @@ public class PDFSigner {
                     // Draw text next to logo
                     cs.beginText();
                     cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD), 7);
-                    cs.newLineAtOffset(x + 65, y + h - 15);
-                    cs.setLeading(9);
+                    cs.newLineAtOffset(x + 75, y + h - 12);
+                    cs.setLeading(8);
                     for (String line : signerText.split("\n")) {
                         cs.showText(line);
                         cs.newLine();
