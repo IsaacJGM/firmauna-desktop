@@ -1,0 +1,15 @@
+# Build artifacts
+target/
+dependency-reduced-pom.xml
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# Maven
+.mvn/
