@@ -267,6 +267,7 @@ public class MainWindow {
                 String cn = extractCN(cert.getSubjectX500Principal().getName());
 
                 String signerText = "Firmado digitalmente por:\n" + cn +
+                    "\n" + reason +
                     (role.isEmpty() ? "" : "\n" + role) +
                     "\nFecha: " + new SimpleDateFormat("yyyy-MM-dd HH:mm").format(new Date()) +
                     "\nfirmaUNA v2.0";
