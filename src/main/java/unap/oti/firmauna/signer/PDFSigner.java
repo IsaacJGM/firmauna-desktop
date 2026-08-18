@@ -27,8 +27,10 @@ import java.security.PrivateKey;
 import java.security.Security;
 import java.security.Signature;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
+import java.util.List;
 
 /**
  * Signs PDFs with detached PKCS#7 signature + optional visual stamp overlay.
@@ -80,24 +82,63 @@ public class PDFSigner {
                         }
                     }
 
-                    // Draw border
-                    cs.setStrokingColor(0, 0.3f, 0.6f);
-                    cs.setLineWidth(1f);
-                    cs.addRect(x - 3, y - 3, w, h);
-                    cs.stroke();
-
-                    // Draw logo on the left side
+                    // Draw logo on the left side while preserving its original aspect ratio.
                     if (logo != null) {
-                        float logoSize = h - 10;
-                        cs.drawImage(logo, x + 5, y + 5, logoSize, logoSize);
+                        float logoAreaWidth = 65;
+                        float logoAreaHeight = h - 10;
+                        float logoRatio = (float) logo.getWidth() / logo.getHeight();
+                        float logoWidth = logoAreaWidth;
+                        float logoHeight = logoWidth / logoRatio;
+
+                        if (logoHeight > logoAreaHeight) {
+                            logoHeight = logoAreaHeight;
+                            logoWidth = logoHeight * logoRatio;
+                        }
+
+                        float logoX = x + 5 + (logoAreaWidth - logoWidth) / 2;
+                        float logoY = y + (h - logoHeight) / 2 + 8;
+                        cs.drawImage(logo, logoX, logoY, logoWidth, logoHeight);
                     }
 
-                    // Draw text next to logo
+                    // Wrap long lines to fit stamp width (~140px at 7pt)
+                    PDType1Font font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
+                    float fontSize = 7;
+                    float maxWidth = w - 80; // leave room for logo + margin
+                    List<String> wrappedLines = new ArrayList<>();
+                    for (String line : signerText.split("\n")) {
+                        try {
+                            float width = font.getStringWidth(line) / 1000 * fontSize;
+                            if (width <= maxWidth) {
+                                wrappedLines.add(line);
+                            } else {
+                                // Word-wrap: split into words and reassemble
+                                String[] words = line.split(" ");
+                                StringBuilder current = new StringBuilder();
+                                for (String word : words) {
+                                    String test = current.length() == 0 ? word : current + " " + word;
+                                    float testWidth = font.getStringWidth(test) / 1000 * fontSize;
+                                    if (testWidth > maxWidth && current.length() > 0) {
+                                        wrappedLines.add(current.toString());
+                                        current = new StringBuilder(word);
+                                    } else {
+                                        current = new StringBuilder(test);
+                                    }
+                                }
+                                if (current.length() > 0) {
+                                    wrappedLines.add(current.toString());
+                                }
+                            }
+                        } catch (Exception e) {
+                            wrappedLines.add(line);
+                        }
+                    }
+
+                    // Draw wrapped text next to logo
                     cs.beginText();
-                    cs.setFont(new PDType1Font(Standard14Fonts.FontName.HELVETICA_BOLD), 7);
+                    cs.setFont(font, fontSize);
                     cs.newLineAtOffset(x + 75, y + h - 12);
                     cs.setLeading(8);
-                    for (String line : signerText.split("\n")) {
+                    for (String line : wrappedLines) {
                         cs.showText(line);
                         cs.newLine();
                     }
