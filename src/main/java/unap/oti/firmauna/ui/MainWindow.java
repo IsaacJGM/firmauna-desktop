@@ -11,14 +11,18 @@ import javafx.scene.control.Button;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
+import javafx.scene.control.RadioButton;
 import javafx.scene.control.Separator;
 import javafx.scene.control.TextField;
+import javafx.scene.control.ToggleGroup;
 import javafx.scene.image.Image;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.control.SplitPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.Text;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
@@ -30,6 +34,7 @@ import org.apache.pdfbox.rendering.PDFRenderer;
 
 import unap.oti.firmauna.pkcs11.TokenProvider;
 import unap.oti.firmauna.signer.PDFSigner;
+import unap.oti.firmauna.signer.PDFSigner.StampLayout;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -48,6 +53,8 @@ public class MainWindow {
     private final Label statusLabel = new Label("Seleccione un PDF para firmar.");
     private final ComboBox<String> reasonCombo = new ComboBox<>();
     private final TextField roleField = new TextField();
+    private final ToggleGroup stampLayoutGroup = new ToggleGroup();
+    private volatile StampLayout stampLayout = StampLayout.HORIZONTAL;
     private final Button signBtn = new Button("Firmar mi PDF");
     private final Button saveBtn = new Button("Guardar PDF firmado");
     private final Label pageLabel = new Label("Pág 1/1");
@@ -76,9 +83,10 @@ public class MainWindow {
     private final double renderScale = 1.5;
     private double pdfPageW = 0, pdfPageH = 0;
     private double cropLlx = 0, cropLly = 0;
-    private static final double STAMP_W = 220, STAMP_H = 70;
-    private double boxWcanvas = STAMP_W, boxHcanvas = STAMP_H;
+    private double boxWcanvas = StampLayout.HORIZONTAL.getWidth(), boxHcanvas = StampLayout.HORIZONTAL.getHeight();
     private Image pageImage;
+    private final Image stampPreviewLogo = new Image(
+        MainWindow.class.getResourceAsStream("/assets/LogoUNA.png"));
 
     public MainWindow(Stage stage) {
         this.stage = stage;
@@ -98,6 +106,15 @@ public class MainWindow {
         );
         reasonCombo.setValue("Soy el autor del documento");
         saveBtn.setDisable(true);
+
+        reasonCombo.valueProperty().addListener((observable, previous, current) -> redrawPreviewIfAvailable());
+        roleField.textProperty().addListener((observable, previous, current) -> redrawPreviewIfAvailable());
+        stampLayoutGroup.selectedToggleProperty().addListener((observable, previous, current) -> {
+            if (current != null && current.getUserData() instanceof StampLayout layout) {
+                stampLayout = layout;
+                updateStampLayout();
+            }
+        });
 
         setupCanvasDrag();
     }
@@ -153,6 +170,15 @@ public class MainWindow {
         roleField.setPromptText("Ej. Docente Universitario");
         roleField.setMaxWidth(Double.MAX_VALUE);
 
+        RadioButton horizontalLayout = new RadioButton("Horizontal");
+        horizontalLayout.setToggleGroup(stampLayoutGroup);
+        horizontalLayout.setUserData(StampLayout.HORIZONTAL);
+        horizontalLayout.setSelected(true);
+        RadioButton verticalLayout = new RadioButton("Vertical");
+        verticalLayout.setToggleGroup(stampLayoutGroup);
+        verticalLayout.setUserData(StampLayout.VERTICAL);
+        HBox layoutChoices = new HBox(12, horizontalLayout, verticalLayout);
+
         signBtn.setMaxWidth(Double.MAX_VALUE);
         signBtn.setStyle("-fx-background-color: #dc3545; -fx-text-fill: white; -fx-font-weight: bold;");
         signBtn.setOnAction(e -> signDocument());
@@ -169,6 +195,8 @@ public class MainWindow {
             reasonCombo,
             new Label("Cargo:"),
             roleField,
+            new Label("Formato de estampilla:"),
+            layoutChoices,
             new Separator(),
             signBtn,
             saveBtn,
@@ -261,9 +289,7 @@ public class MainWindow {
                 offsetX = (canvas.getWidth() - w) / 2;
                 offsetY = (canvas.getHeight() - h) / 2;
 
-                // Box must visually match the real 220x70-point stamp on the PDF
-                boxWcanvas = STAMP_W * renderScale * canvasScale;
-                boxHcanvas = STAMP_H * renderScale * canvasScale;
+                updateBoxDimensions();
 
                 // Default position: bottom-right of the page (resets per page)
                 if (!dragging) {
@@ -291,11 +317,105 @@ public class MainWindow {
     }
 
     private void drawBox() {
-        gc.setStroke(Color.DODGERBLUE);
-        gc.setLineWidth(1.5);
         gc.setFill(Color.rgb(30, 144, 255, 0.15));
         gc.fillRect(boxX, boxY, boxWcanvas, boxHcanvas);
+        drawStampPreview();
+        gc.setStroke(Color.DODGERBLUE);
+        gc.setLineWidth(1.5);
         gc.strokeRect(boxX, boxY, boxWcanvas, boxHcanvas);
+    }
+
+    private void redrawPreviewIfAvailable() {
+        if (pageImage != null) {
+            redrawBoxOnly();
+        }
+    }
+
+    private void drawStampPreview() {
+        if (stampPreviewLogo.isError()) {
+            return;
+        }
+
+        StampLayout layout = selectedStampLayout();
+        double stampScale = boxWcanvas / layout.getWidth();
+        double logoAreaWidth = layout == StampLayout.HORIZONTAL ? 65 : layout.getWidth() - 10;
+        double logoAreaHeight = layout == StampLayout.HORIZONTAL ? layout.getHeight() - 10 : 45;
+        double logoRatio = stampPreviewLogo.getWidth() / stampPreviewLogo.getHeight();
+        double logoWidth = logoAreaWidth;
+        double logoHeight = logoWidth / logoRatio;
+
+        if (logoHeight > logoAreaHeight) {
+            logoHeight = logoAreaHeight;
+            logoWidth = logoHeight * logoRatio;
+        }
+
+        double logoPdfX = layout == StampLayout.HORIZONTAL
+            ? 5 + (logoAreaWidth - logoWidth) / 2
+            : 5;
+        double logoPdfY = layout == StampLayout.HORIZONTAL
+            ? (layout.getHeight() - logoHeight) / 2 + 8
+            : layout.getHeight() - 5 - logoAreaHeight + (logoAreaHeight - logoHeight) / 2;
+        double logoCanvasX = boxX + logoPdfX * stampScale;
+        double logoCanvasY = boxY + (layout.getHeight() - (logoPdfY + logoHeight)) * stampScale;
+
+        gc.save();
+        gc.beginPath();
+        gc.rect(boxX, boxY, boxWcanvas, boxHcanvas);
+        gc.closePath();
+        gc.clip();
+
+        gc.drawImage(stampPreviewLogo, logoCanvasX, logoCanvasY,
+            logoWidth * stampScale, logoHeight * stampScale);
+
+        gc.setFill(Color.BLACK);
+        gc.setFont(Font.font("Helvetica", layout.getFontSize() * stampScale));
+        double baseline = layout == StampLayout.HORIZONTAL ? layout.getHeight() - 12 : 64;
+        for (String line : previewStampLines(layout)) {
+            double textX = layout == StampLayout.HORIZONTAL ? 75 : 5;
+            gc.fillText(line, boxX + textX * stampScale,
+                boxY + (layout.getHeight() - baseline) * stampScale);
+            baseline -= layout.getLineLeading();
+        }
+        gc.restore();
+    }
+
+    private java.util.List<String> previewStampLines(StampLayout layout) {
+        String signerName = cert == null
+            ? "Nombre del firmante"
+            : extractCN(cert.getSubjectX500Principal().getName()).replaceFirst("\\s+(?=FAU\\b)", "\n");
+        String reason = reasonCombo.getValue();
+        String role = roleField.getText().trim();
+
+        String signerText = "Firmado digitalmente por:\n" + signerName +
+            "\nMotivo: " + reason +
+            (role.isEmpty() ? "" : "\n" + role) +
+            "\nFecha: " + ZonedDateTime.now(ZoneId.systemDefault())
+                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm 'UTC'XXX"));
+        return wrapPreviewLines(signerText, layout == StampLayout.HORIZONTAL ? 140 : 130,
+            layout.getFontSize());
+    }
+
+    private java.util.List<String> wrapPreviewLines(String text, double maxWidth, double fontSize) {
+        Font font = Font.font("Helvetica", fontSize);
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        for (String line : text.split("\\n")) {
+            StringBuilder current = new StringBuilder();
+            for (String word : line.split(" ")) {
+                String candidate = current.length() == 0 ? word : current + " " + word;
+                Text measure = new Text(candidate);
+                measure.setFont(font);
+                if (measure.getLayoutBounds().getWidth() > maxWidth && current.length() > 0) {
+                    lines.add(current.toString());
+                    current = new StringBuilder(word);
+                } else {
+                    current = new StringBuilder(candidate);
+                }
+            }
+            if (current.length() > 0) {
+                lines.add(current.toString());
+            }
+        }
+        return lines;
     }
 
     private void redrawBoxOnly() {
@@ -307,6 +427,25 @@ public class MainWindow {
                 pageImage.getWidth() * canvasScale, pageImage.getHeight() * canvasScale);
         }
         drawBox();
+    }
+
+    private StampLayout selectedStampLayout() {
+        return stampLayout;
+    }
+
+    private void updateStampLayout() {
+        updateBoxDimensions();
+        if (pageImage != null) {
+            boxX = Math.min(boxX, canvas.getWidth() - boxWcanvas);
+            boxY = Math.min(boxY, canvas.getHeight() - boxHcanvas);
+            redrawBoxOnly();
+        }
+    }
+
+    private void updateBoxDimensions() {
+        StampLayout layout = selectedStampLayout();
+        boxWcanvas = layout.getWidth() * renderScale * canvasScale;
+        boxHcanvas = layout.getHeight() * renderScale * canvasScale;
     }
 
     // ---------- Dragging the signature box ----------
@@ -345,7 +484,8 @@ public class MainWindow {
         double iyBottom = ((boxY + boxHcanvas) - offsetY) / (canvasScale * renderScale);
         double pdfX = cropLlx + ixLeft;
         double pdfYbottom = cropLly + pdfPageH - iyBottom;
-        return new double[]{pdfX, pdfYbottom, STAMP_W, STAMP_H};
+        StampLayout layout = selectedStampLayout();
+        return new double[]{pdfX, pdfYbottom, layout.getWidth(), layout.getHeight()};
     }
 
     // ---------- Signing ----------
@@ -448,8 +588,9 @@ public class MainWindow {
                 String reason = reasonCombo.getSelectionModel().getSelectedItem();
                 String role = roleField.getText().trim();
                 String cn = extractCN(cert.getSubjectX500Principal().getName());
+                String displayName = cn.replaceFirst("\\s+(?=FAU\\b)", "\n");
 
-                String signerText = "Firmado digitalmente por:\n" + cn +
+                String signerText = "Firmado digitalmente por:\n" + displayName +
                     "\nMotivo: " + reason +
                     (role.isEmpty() ? "" : "\n" + role) +
                     "\nFecha: " + ZonedDateTime.now(ZoneId.systemDefault())
@@ -465,7 +606,7 @@ public class MainWindow {
                     cert, privateKey, certChain,
                     reason, "Puno, Per\u00fa", cn,
                     signerText, currentPage,
-                    (float) rect[0], (float) rect[1], (float) rect[2], (float) rect[3]
+                    (float) rect[0], (float) rect[1], selectedStampLayout()
                 );
 
                 signed = true;

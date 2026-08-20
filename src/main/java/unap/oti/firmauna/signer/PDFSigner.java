@@ -37,6 +37,39 @@ import java.util.List;
  */
 public class PDFSigner {
 
+    public enum StampLayout {
+        HORIZONTAL(220f, 70f, 6f, 6.5f),
+        VERTICAL(140f, 120f, 5f, 5.5f);
+
+        private final float width;
+        private final float height;
+        private final float fontSize;
+        private final float lineLeading;
+
+        StampLayout(float width, float height, float fontSize, float lineLeading) {
+            this.width = width;
+            this.height = height;
+            this.fontSize = fontSize;
+            this.lineLeading = lineLeading;
+        }
+
+        public float getWidth() {
+            return width;
+        }
+
+        public float getHeight() {
+            return height;
+        }
+
+        public float getFontSize() {
+            return fontSize;
+        }
+
+        public float getLineLeading() {
+            return lineLeading;
+        }
+    }
+
     static {
         Security.addProvider(new BouncyCastleProvider());
     }
@@ -44,9 +77,9 @@ public class PDFSigner {
     public static void signPDF(File inputPdf, File outputPdf,
                                X509Certificate cert, PrivateKey privateKey,
                                java.security.cert.Certificate[] chain,
-                               String reason, String location, String contact,
-                               String signerText, int page,
-                               float x, float y, float w, float h) throws Exception {
+                                String reason, String location, String contact,
+                                String signerText, int page,
+                                float x, float y, StampLayout layout) throws Exception {
 
         try (PDDocument doc = Loader.loadPDF(inputPdf)) {
 
@@ -82,72 +115,106 @@ public class PDFSigner {
                         }
                     }
 
-                    // Draw logo on the left side while preserving its original aspect ratio.
-                    if (logo != null) {
-                        float logoAreaWidth = 65;
-                        float logoAreaHeight = h - 10;
-                        float logoRatio = (float) logo.getWidth() / logo.getHeight();
-                        float logoWidth = logoAreaWidth;
-                        float logoHeight = logoWidth / logoRatio;
-
-                        if (logoHeight > logoAreaHeight) {
-                            logoHeight = logoAreaHeight;
-                            logoWidth = logoHeight * logoRatio;
-                        }
-
-                        float logoX = x + 5 + (logoAreaWidth - logoWidth) / 2;
-                        float logoY = y + (h - logoHeight) / 2 + 8;
-                        cs.drawImage(logo, logoX, logoY, logoWidth, logoHeight);
+                    if (layout == StampLayout.VERTICAL) {
+                        drawVerticalStamp(cs, logo, signerText, x, y, layout);
+                    } else {
+                        drawHorizontalStamp(cs, logo, signerText, x, y, layout);
                     }
-
-                    // Wrap long lines to fit stamp width (~140px at 7pt)
-                    PDType1Font font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
-                    float fontSize = 7;
-                    float maxWidth = w - 80; // leave room for logo + margin
-                    List<String> wrappedLines = new ArrayList<>();
-                    for (String line : signerText.split("\n")) {
-                        try {
-                            float width = font.getStringWidth(line) / 1000 * fontSize;
-                            if (width <= maxWidth) {
-                                wrappedLines.add(line);
-                            } else {
-                                // Word-wrap: split into words and reassemble
-                                String[] words = line.split(" ");
-                                StringBuilder current = new StringBuilder();
-                                for (String word : words) {
-                                    String test = current.length() == 0 ? word : current + " " + word;
-                                    float testWidth = font.getStringWidth(test) / 1000 * fontSize;
-                                    if (testWidth > maxWidth && current.length() > 0) {
-                                        wrappedLines.add(current.toString());
-                                        current = new StringBuilder(word);
-                                    } else {
-                                        current = new StringBuilder(test);
-                                    }
-                                }
-                                if (current.length() > 0) {
-                                    wrappedLines.add(current.toString());
-                                }
-                            }
-                        } catch (Exception e) {
-                            wrappedLines.add(line);
-                        }
-                    }
-
-                    // Draw wrapped text next to logo
-                    cs.beginText();
-                    cs.setFont(font, fontSize);
-                    cs.newLineAtOffset(x + 75, y + h - 12);
-                    cs.setLeading(8);
-                    for (String line : wrappedLines) {
-                        cs.showText(line);
-                        cs.newLine();
-                    }
-                    cs.endText();
                 }
             }
 
             doc.saveIncremental(new java.io.FileOutputStream(outputPdf));
         }
+    }
+
+    private static void drawHorizontalStamp(PDPageContentStream cs, PDImageXObject logo,
+                                            String signerText, float x, float y,
+                                            StampLayout layout) throws IOException {
+        float h = layout.getHeight();
+        if (logo != null) {
+            float logoAreaWidth = 65;
+            float logoAreaHeight = h - 10;
+            float logoRatio = (float) logo.getWidth() / logo.getHeight();
+            float logoWidth = logoAreaWidth;
+            float logoHeight = logoWidth / logoRatio;
+
+            if (logoHeight > logoAreaHeight) {
+                logoHeight = logoAreaHeight;
+                logoWidth = logoHeight * logoRatio;
+            }
+
+            float logoX = x + 5 + (logoAreaWidth - logoWidth) / 2;
+            float logoY = y + (h - logoHeight) / 2 + 8;
+            cs.drawImage(logo, logoX, logoY, logoWidth, logoHeight);
+        }
+
+        drawText(cs, signerText, x + 75, y + h - 12, layout.getWidth() - 80, layout);
+    }
+
+    private static void drawVerticalStamp(PDPageContentStream cs, PDImageXObject logo,
+                                          String signerText, float x, float y,
+                                          StampLayout layout) throws IOException {
+        float w = layout.getWidth();
+        float h = layout.getHeight();
+        if (logo != null) {
+            float logoAreaWidth = w - 10;
+            float logoAreaHeight = 45;
+            float logoRatio = (float) logo.getWidth() / logo.getHeight();
+            float logoWidth = logoAreaWidth;
+            float logoHeight = logoWidth / logoRatio;
+
+            if (logoHeight > logoAreaHeight) {
+                logoHeight = logoAreaHeight;
+                logoWidth = logoHeight * logoRatio;
+            }
+
+            float logoX = x + 5;
+            float logoY = y + h - 5 - logoAreaHeight + (logoAreaHeight - logoHeight) / 2;
+            cs.drawImage(logo, logoX, logoY, logoWidth, logoHeight);
+        }
+
+        drawText(cs, signerText, x + 5, y + 64, w - 10, layout);
+    }
+
+    private static void drawText(PDPageContentStream cs, String signerText,
+                                  float x, float y, float maxWidth,
+                                  StampLayout layout) throws IOException {
+        PDType1Font font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
+        cs.beginText();
+        cs.setFont(font, layout.getFontSize());
+        cs.newLineAtOffset(x, y);
+        cs.setLeading(layout.getLineLeading());
+        for (String line : wrapLines(signerText, font, layout.getFontSize(), maxWidth)) {
+            cs.showText(line);
+            cs.newLine();
+        }
+        cs.endText();
+    }
+
+    private static List<String> wrapLines(String text, PDType1Font font,
+                                          float fontSize, float maxWidth) throws IOException {
+        List<String> wrappedLines = new ArrayList<>();
+        for (String line : text.split("\n")) {
+            if (font.getStringWidth(line) / 1000 * fontSize <= maxWidth) {
+                wrappedLines.add(line);
+                continue;
+            }
+
+            StringBuilder current = new StringBuilder();
+            for (String word : line.split(" ")) {
+                String candidate = current.length() == 0 ? word : current + " " + word;
+                if (font.getStringWidth(candidate) / 1000 * fontSize > maxWidth && current.length() > 0) {
+                    wrappedLines.add(current.toString());
+                    current = new StringBuilder(word);
+                } else {
+                    current = new StringBuilder(candidate);
+                }
+            }
+            if (current.length() > 0) {
+                wrappedLines.add(current.toString());
+            }
+        }
+        return wrappedLines;
     }
 
     private static class SignerImpl implements SignatureInterface {
