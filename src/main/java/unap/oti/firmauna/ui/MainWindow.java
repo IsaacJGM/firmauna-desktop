@@ -24,7 +24,6 @@ import javafx.scene.control.SplitPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
-import javafx.scene.text.Text;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
@@ -92,10 +91,14 @@ public class MainWindow {
     private double canvasScale = 1.0;
     private double offsetX = 0, offsetY = 0;
     private final double renderScale = 1.5;
+    private double pdfToCanvasScaleX = 1.0, pdfToCanvasScaleY = 1.0;
     private double pdfPageW = 0, pdfPageH = 0;
     private double cropLlx = 0, cropLly = 0;
     // Visual-only inset. The real signing rectangle remains unchanged.
-    private static final double PREVIEW_BOX_INSET_PT = 5.0;
+    private static final double PREVIEW_BOX_INSET_PT = 0.0;
+    private static final double STAMP_SAFE_MARGIN_PT = 5.0;
+    // The existing horizontal logo placement extends three points above its layout box.
+    private static final double HORIZONTAL_LOGO_TOP_OVERFLOW_PT = 3.0;
     private double boxWcanvas = StampLayout.HORIZONTAL.getWidth(), boxHcanvas = StampLayout.HORIZONTAL.getHeight();
     private Image pageImage;
     private final Image stampPreviewLogo = new Image(
@@ -495,14 +498,17 @@ public class MainWindow {
                 double h = fxImage.getHeight() * canvasScale;
                 offsetX = (canvas.getWidth() - w) / 2;
                 offsetY = (canvas.getHeight() - h) / 2;
+                pdfToCanvasScaleX = w / pdfPageW;
+                pdfToCanvasScaleY = h / pdfPageH;
 
                 updateBoxDimensions();
 
-                // Default position: bottom-right of the page (resets per page)
+                // Default position: bottom-right of the visible page (resets per page)
                 if (!dragging) {
-                    boxX = canvas.getWidth() - boxWcanvas - 12;
-                    boxY = canvas.getHeight() - boxHcanvas - 12;
+                    boxX = offsetX + (pdfPageW - STAMP_SAFE_MARGIN_PT) * pdfToCanvasScaleX - boxWcanvas;
+                    boxY = offsetY + (pdfPageH - STAMP_SAFE_MARGIN_PT) * pdfToCanvasScaleY - boxHcanvas;
                 }
+                clampBoxToPage();
 
                 pageImage = fxImage;
                 double imgW = w, imgH = h;
@@ -551,8 +557,10 @@ public class MainWindow {
 
         StampLayout layout = selectedStampLayout();
         double stampScale = boxWcanvas / layout.getWidth();
-        double logoAreaWidth = layout == StampLayout.HORIZONTAL ? 65 : layout.getWidth() - 10;
-        double logoAreaHeight = layout == StampLayout.HORIZONTAL ? layout.getHeight() - 10 : 45;
+        double logoAreaWidth = layout == StampLayout.HORIZONTAL ? 65
+            : layout.getWidth() - PDFSigner.VERTICAL_CONTENT_HORIZONTAL_PADDING_PT * 2;
+        double logoAreaHeight = layout == StampLayout.HORIZONTAL ? layout.getHeight() - 10
+            : PDFSigner.VERTICAL_LOGO_AREA_HEIGHT_PT;
         double logoRatio = stampPreviewLogo.getWidth() / stampPreviewLogo.getHeight();
         double logoWidth = logoAreaWidth;
         double logoHeight = logoWidth / logoRatio;
@@ -564,10 +572,10 @@ public class MainWindow {
 
         double logoPdfX = layout == StampLayout.HORIZONTAL
             ? 5 + (logoAreaWidth - logoWidth) / 2
-            : 5;
+            : PDFSigner.VERTICAL_CONTENT_HORIZONTAL_PADDING_PT;
         double logoPdfY = layout == StampLayout.HORIZONTAL
             ? (layout.getHeight() - logoHeight) / 2 + 8
-            : layout.getHeight() - 5 - logoAreaHeight + (logoAreaHeight - logoHeight) / 2;
+            : layout.getHeight() - PDFSigner.VERTICAL_LOGO_TOP_PADDING_PT - logoHeight;
         double logoCanvasX = boxX + logoPdfX * stampScale;
         double logoCanvasY = boxY + (layout.getHeight() - (logoPdfY + logoHeight)) * stampScale;
 
@@ -581,18 +589,22 @@ public class MainWindow {
             logoWidth * stampScale, logoHeight * stampScale);
 
         gc.setFill(Color.BLACK);
-        gc.setFont(Font.font("Helvetica", layout.getFontSize() * stampScale));
-        double baseline = layout == StampLayout.HORIZONTAL ? layout.getHeight() - 12 : 64;
-        for (String line : previewStampLines(layout)) {
-            double textX = layout == StampLayout.HORIZONTAL ? 75 : 5;
-            gc.fillText(line, boxX + textX * stampScale,
+        java.util.List<PDFSigner.StampTextLine> textLines = previewStampLines(layout);
+        double baseline = layout == StampLayout.HORIZONTAL ? layout.getHeight() - 12
+            : PDFSigner.verticalTextBaseline(0, (float) logoPdfY, layout, textLines.size(),
+                textLines.get(textLines.size() - 1).fontSize());
+        for (PDFSigner.StampTextLine line : textLines) {
+            double textX = layout == StampLayout.HORIZONTAL ? 75
+                : PDFSigner.VERTICAL_CONTENT_HORIZONTAL_PADDING_PT;
+            gc.setFont(Font.font("Helvetica", line.fontSize() * stampScale));
+            gc.fillText(line.text(), boxX + textX * stampScale,
                 boxY + (layout.getHeight() - baseline) * stampScale);
             baseline -= layout.getLineLeading();
         }
         gc.restore();
     }
 
-    private java.util.List<String> previewStampLines(StampLayout layout) {
+    private java.util.List<PDFSigner.StampTextLine> previewStampLines(StampLayout layout) {
         String signerName = cert == null
             ? "Nombre del firmante"
             : extractCN(cert.getSubjectX500Principal().getName()).replaceFirst("\\s+(?=FAU\\b)", "\n");
@@ -604,31 +616,13 @@ public class MainWindow {
             (role.isEmpty() ? "" : "\n" + role) +
             "\nFecha: " + ZonedDateTime.now(ZoneId.systemDefault())
                 .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm 'UTC'XXX"));
-        return wrapPreviewLines(signerText, layout == StampLayout.HORIZONTAL ? 140 : 130,
-            layout.getFontSize());
-    }
-
-    private java.util.List<String> wrapPreviewLines(String text, double maxWidth, double fontSize) {
-        Font font = Font.font("Helvetica", fontSize);
-        java.util.List<String> lines = new java.util.ArrayList<>();
-        for (String line : text.split("\\n")) {
-            StringBuilder current = new StringBuilder();
-            for (String word : line.split(" ")) {
-                String candidate = current.length() == 0 ? word : current + " " + word;
-                Text measure = new Text(candidate);
-                measure.setFont(font);
-                if (measure.getLayoutBounds().getWidth() > maxWidth && current.length() > 0) {
-                    lines.add(current.toString());
-                    current = new StringBuilder(word);
-                } else {
-                    current = new StringBuilder(candidate);
-                }
-            }
-            if (current.length() > 0) {
-                lines.add(current.toString());
-            }
+        double maxWidth = layout == StampLayout.HORIZONTAL ? 140
+            : layout.getWidth() - PDFSigner.VERTICAL_CONTENT_HORIZONTAL_PADDING_PT * 2;
+        try {
+            return PDFSigner.layoutText(signerText, layout, (float) maxWidth);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("Unable to layout stamp text", e);
         }
-        return lines;
     }
 
     private void redrawBoxOnly() {
@@ -647,18 +641,42 @@ public class MainWindow {
     }
 
     private void updateStampLayout() {
+        double previousBoxWidth = boxWcanvas;
         updateBoxDimensions();
         if (pageImage != null) {
-            boxX = Math.min(boxX, canvas.getWidth() - boxWcanvas);
-            boxY = Math.min(boxY, canvas.getHeight() - boxHcanvas);
+            if (selectedStampLayout() == StampLayout.VERTICAL && boxWcanvas < previousBoxWidth) {
+                boxX += previousBoxWidth - boxWcanvas;
+            }
+            clampBoxToPage();
             redrawBoxOnly();
         }
     }
 
     private void updateBoxDimensions() {
         StampLayout layout = selectedStampLayout();
-        boxWcanvas = layout.getWidth() * renderScale * canvasScale;
-        boxHcanvas = layout.getHeight() * renderScale * canvasScale;
+        boxWcanvas = layout.getWidth() * pdfToCanvasScaleX;
+        boxHcanvas = layout.getHeight() * pdfToCanvasScaleY;
+    }
+
+    private void clampBoxToPage() {
+        if (pdfPageW <= 0 || pdfPageH <= 0) {
+            return;
+        }
+
+        double minX = offsetX + STAMP_SAFE_MARGIN_PT * pdfToCanvasScaleX;
+        double minY = offsetY + (STAMP_SAFE_MARGIN_PT + stampTopOverflowPt()) * pdfToCanvasScaleY;
+        double maxX = offsetX + (pdfPageW - STAMP_SAFE_MARGIN_PT) * pdfToCanvasScaleX - boxWcanvas;
+        double maxY = offsetY + (pdfPageH - STAMP_SAFE_MARGIN_PT) * pdfToCanvasScaleY - boxHcanvas;
+        boxX = clamp(boxX, minX, maxX);
+        boxY = clamp(boxY, minY, maxY);
+    }
+
+    private double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(value, max));
+    }
+
+    private double stampTopOverflowPt() {
+        return selectedStampLayout() == StampLayout.HORIZONTAL ? HORIZONTAL_LOGO_TOP_OVERFLOW_PT : 0;
     }
 
     // ---------- Dragging the signature box ----------
@@ -674,16 +692,18 @@ public class MainWindow {
                 dragStartY = my - boxY;
             } else {
                 dragging = false;
-                boxX = Math.max(0, Math.min(mx - boxWcanvas / 2, canvas.getWidth() - boxWcanvas));
-                boxY = Math.max(0, Math.min(my - boxHcanvas / 2, canvas.getHeight() - boxHcanvas));
+                boxX = mx - boxWcanvas / 2;
+                boxY = my - boxHcanvas / 2;
+                clampBoxToPage();
                 redrawBoxOnly();
             }
         });
 
         canvas.setOnMouseDragged(e -> {
             if (dragging) {
-                boxX = Math.max(0, Math.min(e.getX() - dragStartX, canvas.getWidth() - boxWcanvas));
-                boxY = Math.max(0, Math.min(e.getY() - dragStartY, canvas.getHeight() - boxHcanvas));
+                boxX = e.getX() - dragStartX;
+                boxY = e.getY() - dragStartY;
+                clampBoxToPage();
                 redrawBoxOnly();
             }
         });
@@ -693,11 +713,15 @@ public class MainWindow {
 
     // Convert the on-screen box to a PDF rectangle (bottom-left anchored, CropBox aware)
     private double[] getPdfRect() {
-        double ixLeft = (boxX - offsetX) / (canvasScale * renderScale);
-        double iyBottom = ((boxY + boxHcanvas) - offsetY) / (canvasScale * renderScale);
-        double pdfX = cropLlx + ixLeft;
-        double pdfYbottom = cropLly + pdfPageH - iyBottom;
+        double ixLeft = (boxX - offsetX) / pdfToCanvasScaleX;
+        double iyBottom = ((boxY + boxHcanvas) - offsetY) / pdfToCanvasScaleY;
         StampLayout layout = selectedStampLayout();
+        double pdfX = clamp(cropLlx + ixLeft,
+            cropLlx + STAMP_SAFE_MARGIN_PT,
+            cropLlx + pdfPageW - layout.getWidth() - STAMP_SAFE_MARGIN_PT);
+        double pdfYbottom = clamp(cropLly + pdfPageH - iyBottom,
+            cropLly + STAMP_SAFE_MARGIN_PT,
+            cropLly + pdfPageH - layout.getHeight() - STAMP_SAFE_MARGIN_PT - stampTopOverflowPt());
         return new double[]{pdfX, pdfYbottom, layout.getWidth(), layout.getHeight()};
     }
 

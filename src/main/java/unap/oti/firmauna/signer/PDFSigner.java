@@ -37,9 +37,16 @@ import java.util.List;
  */
 public class PDFSigner {
 
+    public static final float VERTICAL_CONTENT_HORIZONTAL_PADDING_PT = 0f;
+    public static final float VERTICAL_LOGO_AREA_HEIGHT_PT = 45f;
+    public static final float VERTICAL_LOGO_TOP_PADDING_PT = 0f;
+    public static final float VERTICAL_LOGO_TEXT_GAP_PT = 2f;
+    private static final float HELVETICA_ASCENT_RATIO = 0.718f;
+    private static final float HELVETICA_DESCENT_RATIO = 0.207f;
+
     public enum StampLayout {
         HORIZONTAL(220f, 70f, 6f, 6.5f),
-        VERTICAL(140f, 120f, 5f, 5.5f);
+        VERTICAL(80f, 78f, 5f, 5.5f);
 
         private final float width;
         private final float height;
@@ -148,7 +155,8 @@ public class PDFSigner {
             cs.drawImage(logo, logoX, logoY, logoWidth, logoHeight);
         }
 
-        drawText(cs, signerText, x + 75, y + h - 12, layout.getWidth() - 80, layout);
+        drawText(cs, signerText, x + 75, y + h - 12, layout.getWidth() - 80, layout,
+            Float.POSITIVE_INFINITY);
     }
 
     private static void drawVerticalStamp(PDPageContentStream cs, PDImageXObject logo,
@@ -156,9 +164,10 @@ public class PDFSigner {
                                           StampLayout layout) throws IOException {
         float w = layout.getWidth();
         float h = layout.getHeight();
+        float logoBottom = y + h - VERTICAL_LOGO_TOP_PADDING_PT - VERTICAL_LOGO_AREA_HEIGHT_PT;
         if (logo != null) {
-            float logoAreaWidth = w - 10;
-            float logoAreaHeight = 45;
+            float logoAreaWidth = w - VERTICAL_CONTENT_HORIZONTAL_PADDING_PT * 2;
+            float logoAreaHeight = VERTICAL_LOGO_AREA_HEIGHT_PT;
             float logoRatio = (float) logo.getWidth() / logo.getHeight();
             float logoWidth = logoAreaWidth;
             float logoHeight = logoWidth / logoRatio;
@@ -168,27 +177,80 @@ public class PDFSigner {
                 logoWidth = logoHeight * logoRatio;
             }
 
-            float logoX = x + 5;
-            float logoY = y + h - 5 - logoAreaHeight + (logoAreaHeight - logoHeight) / 2;
+            float logoX = x + VERTICAL_CONTENT_HORIZONTAL_PADDING_PT;
+            float logoY = y + h - VERTICAL_LOGO_TOP_PADDING_PT - logoHeight;
+            logoBottom = logoY;
             cs.drawImage(logo, logoX, logoY, logoWidth, logoHeight);
         }
 
-        drawText(cs, signerText, x + 5, y + 64, w - 10, layout);
+        drawText(cs, signerText,
+            x + VERTICAL_CONTENT_HORIZONTAL_PADDING_PT,
+            y, w - VERTICAL_CONTENT_HORIZONTAL_PADDING_PT * 2, layout, logoBottom);
+    }
+
+    public static float verticalTextBaseline(float stampBottom, StampLayout layout) {
+        return verticalTextBaseline(stampBottom, layout, 1, layout.getFontSize());
+    }
+
+    public static float verticalTextBaseline(float stampBottom, StampLayout layout,
+                                             int renderedLineCount, float lastLineFontSize) {
+        return verticalTextBaseline(stampBottom, Float.POSITIVE_INFINITY, layout,
+            renderedLineCount, lastLineFontSize);
+    }
+
+    public static float verticalTextBaseline(float stampBottom, float logoBottom,
+                                             StampLayout layout, int renderedLineCount,
+                                             float lastLineFontSize) {
+        float bottomAnchoredBaseline = stampBottom
+            + HELVETICA_DESCENT_RATIO * lastLineFontSize
+            + (renderedLineCount - 1) * layout.getLineLeading();
+        float logoClearanceBaseline = logoBottom - VERTICAL_LOGO_TEXT_GAP_PT
+            - HELVETICA_ASCENT_RATIO * layout.getFontSize();
+        // Glue the text to the logo; only push it down when that would
+        // overflow past the stamp's bottom edge.
+        return Math.max(bottomAnchoredBaseline, logoClearanceBaseline);
     }
 
     private static void drawText(PDPageContentStream cs, String signerText,
                                   float x, float y, float maxWidth,
-                                  StampLayout layout) throws IOException {
+                                  StampLayout layout, float logoBottom) throws IOException {
         PDType1Font font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
         cs.beginText();
-        cs.setFont(font, layout.getFontSize());
-        cs.newLineAtOffset(x, y);
         cs.setLeading(layout.getLineLeading());
-        for (String line : wrapLines(signerText, font, layout.getFontSize(), maxWidth)) {
-            cs.showText(line);
+        List<StampTextLine> lines = layoutText(signerText, layout, maxWidth);
+        float baseline = layout == StampLayout.VERTICAL
+            ? verticalTextBaseline(y, logoBottom, layout, lines.size(),
+                lines.get(lines.size() - 1).fontSize())
+            : y;
+        cs.newLineAtOffset(x, baseline);
+        for (StampTextLine line : lines) {
+            float fontSize = line.fontSize();
+            cs.setFont(font, fontSize);
+            cs.showText(line.text());
             cs.newLine();
         }
         cs.endText();
+    }
+
+    public record StampTextLine(String text, float fontSize) { }
+
+    public static List<StampTextLine> layoutText(String signerText, StampLayout layout,
+                                                  float maxWidth) throws IOException {
+        PDType1Font font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
+        List<StampTextLine> lines = new ArrayList<>();
+        for (String sourceLine : signerText.split("\\n")) {
+            float fontSize = fontSizeForLine(sourceLine, layout);
+            for (String line : wrapLines(sourceLine, font, fontSize, maxWidth)) {
+                lines.add(new StampTextLine(line, fontSize));
+            }
+        }
+        return lines;
+    }
+
+    private static float fontSizeForLine(String line, StampLayout layout) {
+        return layout == StampLayout.VERTICAL && line.startsWith("Fecha:")
+            ? 4.5f
+            : layout.getFontSize();
     }
 
     private static List<String> wrapLines(String text, PDType1Font font,
