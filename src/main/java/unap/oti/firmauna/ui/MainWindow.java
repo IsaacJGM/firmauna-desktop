@@ -18,12 +18,14 @@ import javafx.scene.control.TextField;
 import javafx.scene.control.ToggleButton;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.control.SplitPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
+import javafx.scene.text.TextAlignment;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
 import javafx.stage.Stage;
@@ -47,9 +49,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
+import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainWindow {
 
@@ -106,7 +112,7 @@ public class MainWindow {
 
     public MainWindow(Stage stage) {
         this.stage = stage;
-        stage.setTitle("FirmaUNA 2.0");
+        stage.setTitle("FirmaUNA");
         stage.setMinWidth(1050);
         stage.setMinHeight(680);
 
@@ -149,11 +155,20 @@ public class MainWindow {
         header.setStyle("-fx-background-color: #306080; -fx-padding: 12 16;");
         header.setAlignment(Pos.CENTER_LEFT);
 
-        Label title = new Label("firmaUNA 2.0");
+        ImageView headerLogo = new ImageView(new Image(
+            getClass().getResourceAsStream("/assets/unapicono.png")));
+        headerLogo.setFitHeight(40);
+        headerLogo.setPreserveRatio(true);
+        headerLogo.setSmooth(true);
+
+        Label title = new Label("FirmaUNA");
         title.setStyle("-fx-text-fill: white; -fx-font-size: 22px; -fx-font-weight: bold;");
-        Label subtitleLbl = new Label("Firma Digital · Token RENIEC · UNA Puno");
+        Label subtitleLbl = new Label("Firma Digital · UNA Puno");
         subtitleLbl.setStyle("-fx-text-fill: #b0c4de; -fx-font-size: 11px;");
-        header.getChildren().addAll(new VBox(2, title, subtitleLbl));
+
+        HBox titleGroup = new HBox(10, headerLogo, new VBox(2, title, subtitleLbl));
+        titleGroup.setAlignment(Pos.CENTER_LEFT);
+        header.getChildren().addAll(titleGroup);
 
         SplitPane split = new SplitPane();
         split.setDividerPositions(0.62);
@@ -749,14 +764,21 @@ public class MainWindow {
         Button cancelBtn = new Button("Cancelar");
         cancelBtn.setStyle("-fx-background-color: #6c757d; -fx-text-fill: white;");
 
+        AtomicBoolean pinSubmitted = new AtomicBoolean(false);
         okBtn.setOnAction(e -> {
             String pin = pinField.getText();
             if (!pin.isBlank()) {
+                pinSubmitted.set(true);
                 modal.close();
-                doLoginAndSign(pin.trim(), request);
+                doLoginAndChooseCertificate(pin.trim(), request);
             }
         });
         cancelBtn.setOnAction(e -> modal.close());
+        modal.setOnHidden(e -> {
+            if (!pinSubmitted.get()) {
+                restoreAfterSigningCancellation();
+            }
+        });
 
         HBox buttons = new HBox(10, cancelBtn, okBtn);
         buttons.setAlignment(Pos.CENTER);
@@ -767,15 +789,19 @@ public class MainWindow {
         modal.showAndWait();
     }
 
-    private void doLoginAndSign(String pin, SigningRequest request) {
+    private void doLoginAndChooseCertificate(String pin, SigningRequest request) {
         statusLabel.setText("Conectando con el token...");
         signBtn.setDisable(true);
         selectBtn.setDisable(true);
 
         Thread worker = new Thread(() -> {
+            TokenProvider provider = new TokenProvider();
             try {
-                doLoginAndSignBlocking(pin, request);
+                provider.login(pin);
+                List<TokenProvider.CertificateChoice> choices = provider.getCertificateChoices();
+                Platform.runLater(() -> openCertificateSelectionModal(provider, choices, request));
             } catch (Exception e) {
+                provider.logout();
                 Platform.runLater(() -> {
                     statusLabel.setText("Error de token: " + e.getMessage());
                     signBtn.setDisable(false);
@@ -803,25 +829,107 @@ public class MainWindow {
         timeoutGuard.start();
     }
 
-    private void doLoginAndSignBlocking(String pin, SigningRequest request) throws Exception {
-        Platform.runLater(() -> statusLabel.setText("Autenticando en el token..."));
+    private void openCertificateSelectionModal(TokenProvider provider,
+                                                List<TokenProvider.CertificateChoice> choices,
+                                                SigningRequest request) {
+        Stage modal = new Stage();
+        modal.initModality(Modality.APPLICATION_MODAL);
+        modal.initOwner(stage);
+        modal.setTitle("Elegí tu certificado");
 
-        TokenProvider provider = new TokenProvider();
-        provider.login(pin);
-        cert = provider.getCertificate();
-        privateKey = provider.getPrivateKey();
-        certChain = provider.getCertificateChain();
+        ToggleGroup certificateGroup = new ToggleGroup();
+        VBox certificateList = new VBox(10);
+        for (int index = 0; index < choices.size(); index++) {
+            TokenProvider.CertificateChoice choice = choices.get(index);
+            RadioButton option = new RadioButton(extractCN(choice.certificate().getSubjectX500Principal().getName()));
+            option.setToggleGroup(certificateGroup);
+            option.setUserData(choice);
+            option.setSelected(index == 0);
+            option.setStyle("-fx-font-weight: bold;");
 
-        String cn = extractCN(cert.getSubjectX500Principal().getName());
-        Platform.runLater(() -> statusLabel.setText("Token verificado: " + cn));
+            Label details = new Label(
+                "Titular: " + choice.certificate().getSubjectX500Principal().getName() +
+                "\nEmisor: " + choice.certificate().getIssuerX500Principal().getName() +
+                "\nVence: " + formatCertificateDate(choice.certificate()) +
+                "\nEstado: " + certificateStatus(choice.certificate())
+            );
+            details.setWrapText(true);
+            details.setStyle("-fx-text-fill: #555; -fx-font-size: 11px;");
+            VBox card = new VBox(4, option, details);
+            card.setPadding(new Insets(10));
+            card.setStyle("-fx-background-color: #f8f9fa; -fx-border-color: #c8c8c8; -fx-border-radius: 4px;");
+            certificateList.getChildren().add(card);
+        }
 
-        performSigning(request);
+        Button signWithCertificateBtn = new Button("Firmar con este certificado");
+        signWithCertificateBtn.setStyle("-fx-background-color: #198754; -fx-text-fill: white;");
+        Button cancelBtn = new Button("Cancelar");
+        AtomicBoolean certificateSelected = new AtomicBoolean(false);
+        signWithCertificateBtn.setOnAction(e -> {
+            RadioButton selected = (RadioButton) certificateGroup.getSelectedToggle();
+            if (selected == null) {
+                return;
+            }
+            try {
+                TokenProvider.CertificateChoice choice = (TokenProvider.CertificateChoice) selected.getUserData();
+                provider.selectKeyAlias(choice.alias());
+                certificateSelected.set(true);
+                modal.close();
+                performSigning(provider, request);
+            } catch (Exception exception) {
+                statusLabel.setText("Error al seleccionar certificado: " + exception.getMessage());
+            }
+        });
+        cancelBtn.setOnAction(e -> modal.close());
+        modal.setOnHidden(e -> {
+            if (!certificateSelected.get()) {
+                provider.logout();
+                restoreAfterSigningCancellation();
+            }
+        });
+
+        HBox actions = new HBox(10, cancelBtn, signWithCertificateBtn);
+        actions.setAlignment(Pos.CENTER);
+        VBox root = new VBox(14, new Label("Elegí el certificado con el que querés firmar:"), certificateList, actions);
+        root.setPadding(new Insets(18));
+        modal.setScene(new Scene(root, 640, Math.min(220 + choices.size() * 130, 700)));
+        modal.showAndWait();
     }
 
-    private void performSigning(SigningRequest request) {
+    private String formatCertificateDate(X509Certificate certificate) {
+        return DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.getDefault())
+            .withZone(ZoneId.systemDefault())
+            .format(certificate.getNotAfter().toInstant());
+    }
+
+    private String certificateStatus(X509Certificate certificate) {
+        Instant now = Instant.now();
+        Instant expiration = certificate.getNotAfter().toInstant();
+        if (expiration.isBefore(now)) {
+            return "Vencido";
+        }
+        return expiration.isBefore(now.plusSeconds(30L * 24 * 60 * 60)) ? "Por vencer" : "Válido";
+    }
+
+    private void restoreAfterSigningCancellation() {
+        updateWorkflow(1);
+        previewHelpLabel.setText("La firma fue cancelada.");
+        statusLabel.setText("Firma cancelada.");
+        signBtn.setDisable(false);
+        selectBtn.setDisable(false);
+    }
+
+    private void performSigning(TokenProvider provider, SigningRequest request) {
         Thread signing = new Thread(() -> {
             try {
+                cert = provider.getCertificate();
+                privateKey = provider.getPrivateKey();
+                certChain = provider.getCertificateChain();
                 String cn = extractCN(cert.getSubjectX500Principal().getName());
+                Platform.runLater(() -> {
+                    statusLabel.setText("Token verificado: " + cn);
+                    redrawPreviewIfAvailable();
+                });
                 String displayName = cn.replaceFirst("\\s+(?=FAU\\b)", "\n");
 
                 String signerText = "Firmado digitalmente por:\n" + displayName +
@@ -852,6 +960,8 @@ public class MainWindow {
                     selectBtn.setDisable(false);
                     e.printStackTrace();
                 });
+            } finally {
+                provider.logout();
             }
         });
         signing.setDaemon(true);
@@ -906,22 +1016,54 @@ public class MainWindow {
         modal.initModality(Modality.APPLICATION_MODAL);
         modal.initOwner(stage);
         modal.setTitle("Documento firmado");
+        modal.setResizable(false);
 
-        Label details = new Label("Guardado en:\n" + savedPdf.getAbsolutePath() +
-            "\n\nEl documento firmado ya está abierto para que pueda inspeccionarlo o firmarlo nuevamente.");
+        Label successIcon = new Label("✔");
+        successIcon.setStyle(
+            "-fx-text-fill: white; -fx-background-color: #198754; -fx-background-radius: 30px;" +
+            " -fx-alignment: center; -fx-min-width: 60px; -fx-max-width: 60px;" +
+            " -fx-min-height: 60px; -fx-max-height: 60px; -fx-font-size: 28px;" +
+            " -fx-font-weight: bold;");
+
+        Label heading = new Label("Tu documento fue firmado");
+        heading.setStyle("-fx-text-fill: #198754; -fx-font-weight: bold; -fx-font-size: 18px;");
+
+        Label fileNameLabel = new Label(savedPdf.getName());
+        fileNameLabel.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
+        fileNameLabel.setWrapText(true);
+        fileNameLabel.setMaxWidth(380);
+        fileNameLabel.setAlignment(Pos.CENTER);
+
+        Label details = new Label(
+            "Guardado en la misma carpeta del original\ny ya está abierto en la app para firmar de nuevo.");
         details.setWrapText(true);
-        Button signAgainBtn = new Button("Volver a firmar");
+        details.setStyle("-fx-text-fill: #555; -fx-font-size: 12px;");
+        details.setTextAlignment(TextAlignment.CENTER);
+
+        Button signAgainBtn = new Button("✔ Volver a firmar");
+        signAgainBtn.setStyle("-fx-background-color: #198754; -fx-text-fill: white; -fx-font-weight: bold;");
         signAgainBtn.setOnAction(e -> modal.close());
-        Button showInFinderBtn = new Button("Mostrar en Finder");
+        Button showInFinderBtn = new Button("📂 Ver ubicación");
+        showInFinderBtn.setStyle("-fx-background-color: #6c757d; -fx-text-fill: white;");
         Label finderMessage = new Label();
         finderMessage.setWrapText(true);
+        finderMessage.setStyle("-fx-text-fill: #a94442; -fx-font-size: 11px;");
         showInFinderBtn.setOnAction(e -> revealInFinder(savedPdf, finderMessage));
-        HBox actions = new HBox(8, signAgainBtn, showInFinderBtn);
+
+        HBox actions = new HBox(10, showInFinderBtn, signAgainBtn);
         actions.setAlignment(Pos.CENTER);
-        VBox root = new VBox(14, details, actions, finderMessage);
-        root.setPadding(new Insets(18));
+
+        Label tip = new Label("Consejo: podés firmar este PDF varias veces si necesitás más firmas.");
+        tip.setWrapText(true);
+        tip.setStyle("-fx-text-fill: #999; -fx-font-size: 11px;");
+        tip.setAlignment(Pos.CENTER);
+        tip.setTextAlignment(TextAlignment.CENTER);
+
+        VBox root = new VBox(10, successIcon, heading, fileNameLabel, details,
+            actions, finderMessage, new Separator(), tip);
+        root.setPadding(new Insets(20));
         root.setAlignment(Pos.CENTER);
-        modal.setScene(new Scene(root, 440, 220));
+        modal.setScene(new Scene(root, 430, 340));
         modal.showAndWait();
     }
 

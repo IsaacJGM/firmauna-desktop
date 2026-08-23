@@ -10,6 +10,10 @@ import java.security.PrivateKey;
 import java.security.Provider;
 import java.security.Security;
 import java.security.cert.X509Certificate;
+import java.security.cert.Certificate;
+import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Enumeration;
 
 /**
@@ -22,6 +26,17 @@ public class TokenProvider {
     private KeyStore sessionKeyStore;
     private String keyAlias;
     private char[] pin;
+    private List<CertificateChoice> certificateChoices = List.of();
+
+    /**
+     * A signing key available in the authenticated token session.
+     */
+    public record CertificateChoice(String alias, X509Certificate certificate,
+                                    List<Certificate> certificateChain) {
+        public CertificateChoice {
+            certificateChain = List.copyOf(certificateChain);
+        }
+    }
 
     /**
      * Initialize the PKCS#11 provider and login to the token.
@@ -48,22 +63,29 @@ public class TokenProvider {
             this.sessionKeyStore.load(null, pin.toCharArray());
             this.pin = pin.toCharArray();
 
-            // Resolve the key alias and VALIDATE PIN immediately.
+            // Enumerate every signing key alias and VALIDATE PIN immediately.
             // SunPKCS11.load() does NOT validate the PIN — only getKey()
             // with the actual PIN forces the token to check it.
             Enumeration<String> aliases = sessionKeyStore.aliases();
+            List<CertificateChoice> choices = new ArrayList<>();
             while (aliases.hasMoreElements()) {
                 String alias = aliases.nextElement();
                 if (sessionKeyStore.isKeyEntry(alias)) {
-                    this.keyAlias = alias;
-                    // THROWS if PIN is wrong — UnrecoverableKeyException
-                    this.sessionKeyStore.getKey(alias, pin.toCharArray());
-                    break;
+                    Certificate certificate = sessionKeyStore.getCertificate(alias);
+                    Certificate[] chain = sessionKeyStore.getCertificateChain(alias);
+                    if (certificate instanceof X509Certificate x509Certificate) {
+                        choices.add(new CertificateChoice(alias, x509Certificate,
+                            chain == null ? List.of() : Arrays.asList(chain)));
+                    }
                 }
             }
-            if (this.keyAlias == null) {
+            if (choices.isEmpty()) {
                 throw new Exception("No key entry found on token");
             }
+            // THROWS if PIN is wrong — UnrecoverableKeyException.
+            // Access one private key while keeping the same PKCS#11 session.
+            this.sessionKeyStore.getKey(choices.getFirst().alias(), this.pin);
+            this.certificateChoices = List.copyOf(choices);
         } finally {
             try { Files.deleteIfExists(cfg); } catch (IOException ignored) {}
         }
@@ -83,21 +105,38 @@ public class TokenProvider {
 
     public String getKeyAlias() throws Exception {
         if (keyAlias == null) {
-            throw new Exception("Token not logged in or key alias not resolved.");
+            throw new Exception("No signing certificate has been selected.");
         }
         return keyAlias;
     }
 
+    public List<CertificateChoice> getCertificateChoices() throws Exception {
+        getKeyStore();
+        return certificateChoices;
+    }
+
+    /**
+     * Selects one of the aliases discovered during this login session.
+     */
+    public void selectKeyAlias(String alias) throws Exception {
+        getKeyStore();
+        if (certificateChoices.stream().noneMatch(choice -> choice.alias().equals(alias))) {
+            throw new Exception("Unknown signing certificate alias.");
+        }
+        this.keyAlias = alias;
+    }
+
     public X509Certificate getCertificate() throws Exception {
-        return (X509Certificate) getKeyStore().getCertificate(keyAlias);
+        return (X509Certificate) getKeyStore().getCertificate(getKeyAlias());
     }
 
     public java.security.cert.Certificate[] getCertificateChain() throws Exception {
-        return getKeyStore().getCertificateChain(keyAlias);
+        Certificate[] chain = getKeyStore().getCertificateChain(getKeyAlias());
+        return chain == null ? null : chain.clone();
     }
 
     public PrivateKey getPrivateKey() throws Exception {
-        return (PrivateKey) getKeyStore().getKey(keyAlias, pin);
+        return (PrivateKey) getKeyStore().getKey(getKeyAlias(), pin);
     }
 
     public void logout() {
@@ -115,6 +154,11 @@ public class TokenProvider {
         this.sessionKeyStore = null;
         this.configuredProvider = null;
         this.keyAlias = null;
+        this.certificateChoices = List.of();
+        if (this.pin != null) {
+            Arrays.fill(this.pin, '\0');
+            this.pin = null;
+        }
     }
 
     private Path createConfigFile() throws IOException {
