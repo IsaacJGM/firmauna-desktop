@@ -42,6 +42,9 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.time.ZoneId;
@@ -56,8 +59,8 @@ public class MainWindow {
     private final TextField roleField = new TextField();
     private final ToggleGroup stampLayoutGroup = new ToggleGroup();
     private volatile StampLayout stampLayout = StampLayout.HORIZONTAL;
-    private final Button signBtn = new Button("Firmar mi PDF");
-    private final Button saveBtn = new Button("Guardar PDF firmado");
+    private final Button signBtn = new Button("Firmar PDF");
+    private final Button selectBtn = new Button("Seleccionar PDF...");
     private final Label pageLabel = new Label("Página 1 de 1");
     private Button prevPageBtn;
     private Button nextPageBtn;
@@ -65,7 +68,7 @@ public class MainWindow {
     private final Label stepPdfLabel = new Label("○ PDF cargado");
     private final Label stepPositionLabel = new Label("○ Posicioná la firma");
     private final Label stepSignLabel = new Label("○ Firmá con tu token");
-    private final Label stepSaveLabel = new Label("○ Guardá el documento");
+    private final Label stepSaveLabel = new Label("○ PDF guardado automáticamente");
     private final Label previewHelpLabel = new Label("Seleccioná un PDF para comenzar.");
 
     // PDF preview canvas + draggable signature box (integrated, no separate dialog)
@@ -74,7 +77,6 @@ public class MainWindow {
     private final GraphicsContext gc = canvas.getGraphicsContext2D();
 
     private File selectedPdf;
-    private File signedPdf;
     private PDDocument currentDoc;
     private X509Certificate cert;
     private PrivateKey privateKey;
@@ -82,8 +84,6 @@ public class MainWindow {
 
     private int currentPage = 0;
     private int totalPages = 1;
-    private boolean signed = false;
-
     // Box + render transform
     private double boxX = 40, boxY = 40;
     private double dragStartX, dragStartY;
@@ -121,8 +121,6 @@ public class MainWindow {
             "Firma notificación"
         );
         reasonCombo.setValue("Soy el autor del documento");
-        saveBtn.setDisable(true);
-
         reasonCombo.valueProperty().addListener((observable, previous, current) -> redrawPreviewIfAvailable());
         roleField.textProperty().addListener((observable, previous, current) -> redrawPreviewIfAvailable());
         stampLayoutGroup.selectedToggleProperty().addListener((observable, previous, current) -> {
@@ -190,16 +188,11 @@ public class MainWindow {
         controls.setPadding(new Insets(15));
         controls.setMinWidth(300);
 
-        Button selectBtn = new Button("Seleccionar PDF...");
         selectBtn.setMaxWidth(Double.MAX_VALUE);
         selectBtn.setOnAction(e -> openFile());
 
         fileInfoLabel.setWrapText(true);
         fileInfoLabel.setStyle("-fx-text-fill: #555; -fx-font-size: 11px;");
-
-        Button newDocumentBtn = new Button("Nuevo documento");
-        newDocumentBtn.setMaxWidth(Double.MAX_VALUE);
-        newDocumentBtn.setOnAction(e -> newDocument());
 
         reasonCombo.setMaxWidth(Double.MAX_VALUE);
         roleField.setPromptText("Ej. Docente Universitario");
@@ -219,38 +212,30 @@ public class MainWindow {
         signBtn.setStyle("-fx-background-color: #dc3545; -fx-text-fill: white; -fx-font-weight: bold;");
         signBtn.setOnAction(e -> signDocument());
 
-        saveBtn.setMaxWidth(Double.MAX_VALUE);
-        saveBtn.setStyle("-fx-background-color: #198754; -fx-text-fill: white; -fx-font-weight: bold;");
-        saveBtn.setOnAction(e -> saveDocument());
-
-        HBox actionButtons = new HBox(8, signBtn, saveBtn);
-        actionButtons.setFillHeight(true);
-        HBox.setHgrow(signBtn, Priority.ALWAYS);
-        HBox.setHgrow(saveBtn, Priority.ALWAYS);
-        signBtn.setMaxWidth(Double.MAX_VALUE);
-        saveBtn.setMaxWidth(Double.MAX_VALUE);
-
         VBox documentSection = createSection(
-            "DOCUMENTO",
+            "1. Elegí el documento",
+            "Seleccioná el PDF que querés firmar.",
             selectBtn,
-            fileInfoLabel,
-            newDocumentBtn
+            fileInfoLabel
         );
         VBox signatureDataSection = createSection(
-            "DATOS DE FIRMA",
+            "2. Revisá tus datos",
+            "Confirmá el certificado, motivo y rol.",
             new Label("Motivo:"),
             reasonCombo,
             new Label("Cargo:"),
             roleField
         );
         VBox formatSection = createSection(
-            "FORMATO",
+            "3. Elegí el formato",
+            "Elegí horizontal o vertical y arrastrá la firma en el PDF.",
             new Label("Formato de estampilla:"),
             layoutChoices
         );
         VBox actionsSection = createSection(
-            "ACCIONES",
-            actionButtons,
+            "4. Firmá tu documento",
+            "La app guarda el archivo automáticamente.",
+            signBtn,
             createWorkflowSection(),
             statusLabel
         );
@@ -276,11 +261,15 @@ public class MainWindow {
         return root;
     }
 
-    private VBox createSection(String title, javafx.scene.Node... content) {
+    private VBox createSection(String title, String help, javafx.scene.Node... content) {
         Label sectionTitle = new Label(title);
         sectionTitle.setStyle("-fx-font-weight: bold; -fx-text-fill: #306080; -fx-font-size: 12px;");
+        Label sectionHelp = new Label(help);
+        sectionHelp.setWrapText(true);
+        sectionHelp.setStyle("-fx-text-fill: #777; -fx-font-size: 10px;");
+        VBox sectionHeader = new VBox(2, sectionTitle, sectionHelp);
         VBox section = new VBox(6);
-        section.getChildren().add(sectionTitle);
+        section.getChildren().add(sectionHeader);
         section.getChildren().addAll(content);
         return section;
     }
@@ -303,7 +292,7 @@ public class MainWindow {
                 case 0 -> "PDF cargado";
                 case 1 -> "Posicioná la firma";
                 case 2 -> "Firmá con tu token";
-                default -> "Guardá el documento";
+                default -> "PDF guardado automáticamente";
             };
             steps[index].setText(marker + label);
             steps[index].setStyle(completed
@@ -364,13 +353,6 @@ public class MainWindow {
 
     // ---------- PDF loading & rendering ----------
 
-    private void newDocument() {
-        if (signed) {
-            showAlert("Este documento ya fue firmado. Seleccione otro PDF para iniciar un nuevo documento.");
-        }
-        openFile();
-    }
-
     private void openFile() {
         FileChooser chooser = new FileChooser();
         chooser.setTitle("Seleccionar PDF");
@@ -379,6 +361,7 @@ public class MainWindow {
         if (file != null) {
             resetDocumentState();
             selectedPdf = file;
+            updateDocumentChooserLabel();
             fileInfoLabel.setText("Archivo: " + file.getName() +
                 "\nPáginas: cargando..." +
                 "\nTamaño: " + formatFileSize(file.length()));
@@ -398,11 +381,9 @@ public class MainWindow {
             currentDoc = null;
         }
         selectedPdf = null;
-        signedPdf = null;
         cert = null;
         privateKey = null;
         certChain = null;
-        signed = false;
         currentPage = 0;
         totalPages = 1;
         pageImage = null;
@@ -412,14 +393,18 @@ public class MainWindow {
         statusLabel.setText("Seleccione un PDF para firmar.");
         previewHelpLabel.setText("Seleccioná un PDF para comenzar.");
         updateWorkflow(0);
-        saveBtn.setDisable(true);
         signBtn.setDisable(false);
+        updateDocumentChooserLabel();
         gc.clearRect(0, 0, canvas.getWidth(), canvas.getHeight());
         gc.setFill(Color.web("#e8e8e8"));
         gc.fillRect(0, 0, canvas.getWidth(), canvas.getHeight());
     }
 
     private void loadPdf(File file) {
+        loadPdf(file, () -> { }, () -> { });
+    }
+
+    private void loadPdf(File file, Runnable onLoaded, Runnable onLoadError) {
         try {
             if (currentDoc != null) currentDoc.close();
             currentDoc = Loader.loadPDF(file);
@@ -434,9 +419,13 @@ public class MainWindow {
                 updateWorkflow(1);
                 statusLabel.setText("PDF cargado. Arrastre el recuadro y presione Firmar.");
                 updatePreviewHelp();
+                onLoaded.run();
             });
         } catch (Exception e) {
-            Platform.runLater(() -> statusLabel.setText("Error al cargar PDF: " + e.getMessage()));
+            Platform.runLater(() -> {
+                statusLabel.setText("Error al cargar PDF: " + e.getMessage());
+                onLoadError.run();
+            });
         }
     }
 
@@ -733,16 +722,20 @@ public class MainWindow {
             showAlert("Primero seleccione un archivo PDF.");
             return;
         }
-        if (signed) {
-            showAlert("Este documento ya fue firmado. Para volver a firmar, seleccione el PDF nuevamente.");
-            return;
-        }
+        SigningRequest request = new SigningRequest(
+            selectedPdf,
+            reasonCombo.getSelectionModel().getSelectedItem(),
+            roleField.getText().trim(),
+            currentPage,
+            getPdfRect(),
+            selectedStampLayout()
+        );
         updateWorkflow(2);
         previewHelpLabel.setText("Validá el PIN del token para completar la firma.");
-        openPinModal();
+        openPinModal(request);
     }
 
-    private void openPinModal() {
+    private void openPinModal(SigningRequest request) {
         Stage modal = new Stage();
         modal.initModality(Modality.APPLICATION_MODAL);
         modal.initOwner(stage);
@@ -760,7 +753,7 @@ public class MainWindow {
             String pin = pinField.getText();
             if (!pin.isBlank()) {
                 modal.close();
-                doLoginAndSign(pin.trim());
+                doLoginAndSign(pin.trim(), request);
             }
         });
         cancelBtn.setOnAction(e -> modal.close());
@@ -774,17 +767,19 @@ public class MainWindow {
         modal.showAndWait();
     }
 
-    private void doLoginAndSign(String pin) {
+    private void doLoginAndSign(String pin, SigningRequest request) {
         statusLabel.setText("Conectando con el token...");
         signBtn.setDisable(true);
+        selectBtn.setDisable(true);
 
         Thread worker = new Thread(() -> {
             try {
-                doLoginAndSignBlocking(pin);
+                doLoginAndSignBlocking(pin, request);
             } catch (Exception e) {
                 Platform.runLater(() -> {
                     statusLabel.setText("Error de token: " + e.getMessage());
                     signBtn.setDisable(false);
+                    selectBtn.setDisable(false);
                 });
             }
         });
@@ -799,6 +794,7 @@ public class MainWindow {
                 Platform.runLater(() -> {
                     statusLabel.setText("Timeout: token no respondió. Verifique conexión e intente de nuevo.");
                     signBtn.setDisable(false);
+                    selectBtn.setDisable(false);
                 });
                 worker.interrupt();
             }
@@ -807,7 +803,7 @@ public class MainWindow {
         timeoutGuard.start();
     }
 
-    private void doLoginAndSignBlocking(String pin) throws Exception {
+    private void doLoginAndSignBlocking(String pin, SigningRequest request) throws Exception {
         Platform.runLater(() -> statusLabel.setText("Autenticando en el token..."));
 
         TokenProvider provider = new TokenProvider();
@@ -819,48 +815,41 @@ public class MainWindow {
         String cn = extractCN(cert.getSubjectX500Principal().getName());
         Platform.runLater(() -> statusLabel.setText("Token verificado: " + cn));
 
-        performSigning();
+        performSigning(request);
     }
 
-    private void performSigning() {
+    private void performSigning(SigningRequest request) {
         Thread signing = new Thread(() -> {
             try {
-                String reason = reasonCombo.getSelectionModel().getSelectedItem();
-                String role = roleField.getText().trim();
                 String cn = extractCN(cert.getSubjectX500Principal().getName());
                 String displayName = cn.replaceFirst("\\s+(?=FAU\\b)", "\n");
 
                 String signerText = "Firmado digitalmente por:\n" + displayName +
-                    "\nMotivo: " + reason +
-                    (role.isEmpty() ? "" : "\n" + role) +
+                    "\nMotivo: " + request.reason() +
+                    (request.role().isEmpty() ? "" : "\n" + request.role()) +
                     "\nFecha: " + ZonedDateTime.now(ZoneId.systemDefault())
                         .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm 'UTC'XXX"));
 
-                File output = File.createTempFile("firmado-", "-FD.pdf");
-                signedPdf = output;
-
-                double[] rect = getPdfRect();
-
-                PDFSigner.signPDF(
-                    selectedPdf, signedPdf,
+                Path outputDirectory = request.inputPdf().toPath().toAbsolutePath().getParent();
+                Path temporaryOutput = Files.createTempFile(outputDirectory, ".firmauna-", ".pdf");
+                try {
+                    PDFSigner.signPDF(
+                    request.inputPdf(), temporaryOutput.toFile(),
                     cert, privateKey, certChain,
-                    reason, "Puno, Per\u00fa", cn,
-                    signerText, currentPage,
-                    (float) rect[0], (float) rect[1], selectedStampLayout()
-                );
-
-                signed = true;
-                Platform.runLater(() -> {
-                    statusLabel.setText("PDF firmado correctamente en la página " + (currentPage + 1) + ". Guarde el archivo.");
-                    updateWorkflow(3);
-                    previewHelpLabel.setText("Firma realizada. Guardá el PDF firmado.");
-                    saveBtn.setDisable(false);
-                    signBtn.setDisable(true);
-                });
+                    request.reason(), "Puno, Per\u00fa", cn,
+                    signerText, request.page(),
+                    (float) request.rectangle()[0], (float) request.rectangle()[1], request.layout()
+                    );
+                    Path savedOutput = moveToNextSignedOutput(temporaryOutput, request.inputPdf());
+                    Platform.runLater(() -> loadSavedSignedPdf(savedOutput.toFile()));
+                } finally {
+                    Files.deleteIfExists(temporaryOutput);
+                }
             } catch (Exception e) {
                 Platform.runLater(() -> {
                     statusLabel.setText("Error de firma: " + e.getMessage());
                     signBtn.setDisable(false);
+                    selectBtn.setDisable(false);
                     e.printStackTrace();
                 });
             }
@@ -869,31 +858,96 @@ public class MainWindow {
         signing.start();
     }
 
-    private void saveDocument() {
-        if (signedPdf == null) {
-            showAlert("No hay un PDF firmado. Primero firme un documento.");
-            return;
-        }
-        FileChooser chooser = new FileChooser();
-        chooser.setTitle("Guardar PDF firmado");
-        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter("PDF", "*.pdf"));
-        if (selectedPdf != null) {
-            String name = selectedPdf.getName().replaceAll(".pdf$", "");
-            chooser.setInitialFileName(name + "[Firmado].pdf");
-        }
-        File dest = chooser.showSaveDialog(stage);
-        if (dest != null) {
+    private void loadSavedSignedPdf(File savedPdf) {
+        resetDocumentState();
+        selectedPdf = savedPdf;
+        updateDocumentChooserLabel();
+        fileInfoLabel.setText("Archivo: " + savedPdf.getName() + "\nPáginas: cargando..." +
+            "\nTamaño: " + formatFileSize(savedPdf.length()));
+        statusLabel.setText("Abriendo documento firmado: " + savedPdf.getName());
+        previewHelpLabel.setText("Abriendo el PDF firmado...");
+        loadPdf(savedPdf, () -> {
+            updateWorkflow(4);
+            previewHelpLabel.setText("El documento firmado está abierto y listo para firmarse nuevamente.");
+            statusLabel.setText("Documento firmado y guardado: " + savedPdf.getName());
+            signBtn.setDisable(false);
+            selectBtn.setDisable(false);
+            showSignedDocumentModal(savedPdf);
+        }, () -> {
+            signBtn.setDisable(false);
+            selectBtn.setDisable(false);
+        });
+    }
+
+    private Path moveToNextSignedOutput(Path temporaryOutput, File inputPdf) throws java.io.IOException {
+        Path inputPath = inputPdf.toPath().toAbsolutePath();
+        Path directory = inputPath.getParent();
+        String fileName = inputPath.getFileName().toString();
+        String stem = fileName.replaceFirst("(?i)\\.pdf$", "")
+            .replaceFirst(" (?:\\d+ )?\\[FU]$", "");
+
+        for (int number = 1; ; number++) {
+            String suffix = number == 1 ? " [FU].pdf" : " " + number + " [FU].pdf";
+            Path output = directory.resolve(stem + suffix);
             try {
-                java.nio.file.Files.copy(signedPdf.toPath(), dest.toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                updateWorkflow(4);
-                previewHelpLabel.setText("Documento guardado correctamente.");
-                statusLabel.setText("Guardado: " + dest.getName());
-            } catch (java.io.IOException e) {
-                showAlert("Error al guardar: " + e.getMessage());
+                return Files.move(temporaryOutput, output);
+            } catch (FileAlreadyExistsException ignored) {
+                // Try the next sequence number without replacing an existing signed file.
             }
         }
     }
+
+    private void updateDocumentChooserLabel() {
+        selectBtn.setText(selectedPdf == null ? "Seleccionar PDF..." : "Abrir otro PDF...");
+    }
+
+    private void showSignedDocumentModal(File savedPdf) {
+        Stage modal = new Stage();
+        modal.initModality(Modality.APPLICATION_MODAL);
+        modal.initOwner(stage);
+        modal.setTitle("Documento firmado");
+
+        Label details = new Label("Guardado en:\n" + savedPdf.getAbsolutePath() +
+            "\n\nEl documento firmado ya está abierto para que pueda inspeccionarlo o firmarlo nuevamente.");
+        details.setWrapText(true);
+        Button signAgainBtn = new Button("Volver a firmar");
+        signAgainBtn.setOnAction(e -> modal.close());
+        Button showInFinderBtn = new Button("Mostrar en Finder");
+        Label finderMessage = new Label();
+        finderMessage.setWrapText(true);
+        showInFinderBtn.setOnAction(e -> revealInFinder(savedPdf, finderMessage));
+        HBox actions = new HBox(8, signAgainBtn, showInFinderBtn);
+        actions.setAlignment(Pos.CENTER);
+        VBox root = new VBox(14, details, actions, finderMessage);
+        root.setPadding(new Insets(18));
+        root.setAlignment(Pos.CENTER);
+        modal.setScene(new Scene(root, 440, 220));
+        modal.showAndWait();
+    }
+
+    private void revealInFinder(File savedPdf, Label finderMessage) {
+        if (!System.getProperty("os.name", "").startsWith("Mac")) {
+            finderMessage.setText("Finder solo está disponible en macOS.");
+            return;
+        }
+
+        Path savedPath = savedPdf.toPath().toAbsolutePath();
+        Thread finder = new Thread(() -> {
+            try {
+                Process process = new ProcessBuilder("open", "-R", savedPath.toString()).start();
+                if (process.waitFor() != 0) {
+                    Platform.runLater(() -> finderMessage.setText("No se pudo mostrar el archivo en Finder."));
+                }
+            } catch (Exception e) {
+                Platform.runLater(() -> finderMessage.setText("No se pudo mostrar el archivo en Finder."));
+            }
+        });
+        finder.setDaemon(true);
+        finder.start();
+    }
+
+    private record SigningRequest(File inputPdf, String reason, String role, int page,
+                                  double[] rectangle, StampLayout layout) { }
 
     private String extractCN(String dn) {
         for (String part : dn.split(",")) {
