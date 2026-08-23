@@ -557,9 +557,9 @@ public class MainWindow {
 
         StampLayout layout = selectedStampLayout();
         double stampScale = boxWcanvas / layout.getWidth();
-        double logoAreaWidth = layout == StampLayout.HORIZONTAL ? 65
+        double logoAreaWidth = layout == StampLayout.HORIZONTAL ? PDFSigner.HORIZONTAL_LOGO_AREA_WIDTH_PT
             : layout.getWidth() - PDFSigner.VERTICAL_CONTENT_HORIZONTAL_PADDING_PT * 2;
-        double logoAreaHeight = layout == StampLayout.HORIZONTAL ? layout.getHeight() - 10
+        double logoAreaHeight = layout == StampLayout.HORIZONTAL ? layout.getHeight()
             : PDFSigner.VERTICAL_LOGO_AREA_HEIGHT_PT;
         double logoRatio = stampPreviewLogo.getWidth() / stampPreviewLogo.getHeight();
         double logoWidth = logoAreaWidth;
@@ -571,10 +571,10 @@ public class MainWindow {
         }
 
         double logoPdfX = layout == StampLayout.HORIZONTAL
-            ? 5 + (logoAreaWidth - logoWidth) / 2
+            ? (logoAreaWidth - logoWidth) / 2
             : PDFSigner.VERTICAL_CONTENT_HORIZONTAL_PADDING_PT;
         double logoPdfY = layout == StampLayout.HORIZONTAL
-            ? (layout.getHeight() - logoHeight) / 2 + 8
+            ? (layout.getHeight() - logoHeight) / 2
             : layout.getHeight() - PDFSigner.VERTICAL_LOGO_TOP_PADDING_PT - logoHeight;
         double logoCanvasX = boxX + logoPdfX * stampScale;
         double logoCanvasY = boxY + (layout.getHeight() - (logoPdfY + logoHeight)) * stampScale;
@@ -590,11 +590,12 @@ public class MainWindow {
 
         gc.setFill(Color.BLACK);
         java.util.List<PDFSigner.StampTextLine> textLines = previewStampLines(layout);
-        double baseline = layout == StampLayout.HORIZONTAL ? layout.getHeight() - 12
+        double baseline = layout == StampLayout.HORIZONTAL
+            ? PDFSigner.horizontalTextBaseline(0, layout, textLines)
             : PDFSigner.verticalTextBaseline(0, (float) logoPdfY, layout, textLines.size(),
                 textLines.get(textLines.size() - 1).fontSize());
         for (PDFSigner.StampTextLine line : textLines) {
-            double textX = layout == StampLayout.HORIZONTAL ? 75
+            double textX = layout == StampLayout.HORIZONTAL ? PDFSigner.HORIZONTAL_TEXT_X_PT
                 : PDFSigner.VERTICAL_CONTENT_HORIZONTAL_PADDING_PT;
             gc.setFont(Font.font("Helvetica", line.fontSize() * stampScale));
             gc.fillText(line.text(), boxX + textX * stampScale,
@@ -616,7 +617,7 @@ public class MainWindow {
             (role.isEmpty() ? "" : "\n" + role) +
             "\nFecha: " + ZonedDateTime.now(ZoneId.systemDefault())
                 .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm 'UTC'XXX"));
-        double maxWidth = layout == StampLayout.HORIZONTAL ? 140
+        double maxWidth = layout == StampLayout.HORIZONTAL ? PDFSigner.HORIZONTAL_TEXT_MAX_WIDTH_PT
             : layout.getWidth() - PDFSigner.VERTICAL_CONTENT_HORIZONTAL_PADDING_PT * 2;
         try {
             return PDFSigner.layoutText(signerText, layout, (float) maxWidth);

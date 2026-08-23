@@ -41,12 +41,17 @@ public class PDFSigner {
     public static final float VERTICAL_LOGO_AREA_HEIGHT_PT = 45f;
     public static final float VERTICAL_LOGO_TOP_PADDING_PT = 0f;
     public static final float VERTICAL_LOGO_TEXT_GAP_PT = 2f;
+    public static final float HORIZONTAL_LOGO_AREA_WIDTH_PT = 65f;
+    public static final float HORIZONTAL_LOGO_TEXT_GAP_PT = 2f;
+    public static final float HORIZONTAL_TEXT_X_PT = HORIZONTAL_LOGO_AREA_WIDTH_PT + HORIZONTAL_LOGO_TEXT_GAP_PT;
+    // 210 stamp width - 66 text start = 144.
+    public static final float HORIZONTAL_TEXT_MAX_WIDTH_PT = 103f;
     private static final float HELVETICA_ASCENT_RATIO = 0.718f;
     private static final float HELVETICA_DESCENT_RATIO = 0.207f;
 
     public enum StampLayout {
-        HORIZONTAL(220f, 70f, 6f, 6.5f),
-        VERTICAL(80f, 78f, 5f, 5.5f);
+        HORIZONTAL(170f, 45f, 6f, 6.5f),
+        VERTICAL(80f, 81f, 5f, 5.5f);
 
         private final float width;
         private final float height;
@@ -139,8 +144,8 @@ public class PDFSigner {
                                             StampLayout layout) throws IOException {
         float h = layout.getHeight();
         if (logo != null) {
-            float logoAreaWidth = 65;
-            float logoAreaHeight = h - 10;
+            float logoAreaWidth = HORIZONTAL_LOGO_AREA_WIDTH_PT;
+            float logoAreaHeight = h;
             float logoRatio = (float) logo.getWidth() / logo.getHeight();
             float logoWidth = logoAreaWidth;
             float logoHeight = logoWidth / logoRatio;
@@ -150,12 +155,13 @@ public class PDFSigner {
                 logoWidth = logoHeight * logoRatio;
             }
 
-            float logoX = x + 5 + (logoAreaWidth - logoWidth) / 2;
-            float logoY = y + (h - logoHeight) / 2 + 8;
+            float logoX = x + (logoAreaWidth - logoWidth) / 2;
+            float logoY = y + (h - logoHeight) / 2;
             cs.drawImage(logo, logoX, logoY, logoWidth, logoHeight);
         }
 
-        drawText(cs, signerText, x + 75, y + h - 12, layout.getWidth() - 80, layout,
+        drawText(cs, signerText, x + HORIZONTAL_TEXT_X_PT, y,
+            HORIZONTAL_TEXT_MAX_WIDTH_PT, layout,
             Float.POSITIVE_INFINITY);
     }
 
@@ -192,6 +198,24 @@ public class PDFSigner {
         return verticalTextBaseline(stampBottom, layout, 1, layout.getFontSize());
     }
 
+    public static float horizontalTextBaseline(float stampBottom, StampLayout layout,
+                                               List<StampTextLine> lines) {
+        if (lines.isEmpty()) {
+            throw new IllegalArgumentException("Horizontal stamp text must contain at least one line");
+        }
+
+        float firstLineAscent = HELVETICA_ASCENT_RATIO * lines.get(0).fontSize();
+        float lastLineDescent = HELVETICA_DESCENT_RATIO
+            * lines.get(lines.size() - 1).fontSize();
+        float interlineHeight = (lines.size() - 1) * layout.getLineLeading();
+        float textBlockVisualHeight = firstLineAscent + interlineHeight + lastLineDescent;
+        float textBlockCenter = stampBottom + layout.getHeight() / 2;
+
+        // Center the rendered glyph bounds, not the baselines, in the logo area.
+        return textBlockCenter - textBlockVisualHeight / 2
+            + interlineHeight + lastLineDescent;
+    }
+
     public static float verticalTextBaseline(float stampBottom, StampLayout layout,
                                              int renderedLineCount, float lastLineFontSize) {
         return verticalTextBaseline(stampBottom, Float.POSITIVE_INFINITY, layout,
@@ -221,7 +245,7 @@ public class PDFSigner {
         float baseline = layout == StampLayout.VERTICAL
             ? verticalTextBaseline(y, logoBottom, layout, lines.size(),
                 lines.get(lines.size() - 1).fontSize())
-            : y;
+            : horizontalTextBaseline(y, layout, lines);
         cs.newLineAtOffset(x, baseline);
         for (StampTextLine line : lines) {
             float fontSize = line.fontSize();
