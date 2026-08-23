@@ -8,6 +8,7 @@ import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
+import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.ContentDisplay;
 import javafx.scene.control.Label;
@@ -40,6 +41,9 @@ import unap.oti.firmauna.signer.PDFSigner;
 import unap.oti.firmauna.signer.PDFSigner.StampLayout;
 
 import javax.imageio.ImageIO;
+import javax.naming.InvalidNameException;
+import javax.naming.ldap.LdapName;
+import javax.naming.ldap.Rdn;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -53,11 +57,29 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
 import java.util.List;
+import java.util.stream.IntStream;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainWindow {
+
+    private static final int SPACE_SMALL = 8;
+    private static final int SPACE_NORMAL = 16;
+    private static final int SPACE_SECTION = 24;
+    private static final String PRIMARY_BUTTON_STYLE =
+        "-fx-background-color: #198754; -fx-text-fill: white; -fx-font-weight: bold;";
+    private static final String SECONDARY_BUTTON_STYLE =
+        "-fx-background-color: #306080; -fx-text-fill: white; -fx-font-weight: bold;";
+    private static final String NEUTRAL_BUTTON_STYLE =
+        "-fx-background-color: #f8f9fa; -fx-border-color: #aeb7c1; -fx-text-fill: #334155;";
+    private static final String MODAL_CUE_STYLE =
+        "-fx-text-fill: #306080; -fx-font-weight: bold; -fx-font-size: 12px;";
+    private static final String MODAL_HEADING_STYLE =
+        "-fx-text-fill: #1f2937; -fx-font-weight: bold; -fx-font-size: 18px;";
+    private static final String MODAL_HELP_STYLE =
+        "-fx-text-fill: #555; -fx-font-size: 12px;";
 
     private final Stage stage;
     private final Label statusLabel = new Label("Seleccione un PDF para firmar.");
@@ -67,15 +89,16 @@ public class MainWindow {
     private volatile StampLayout stampLayout = StampLayout.HORIZONTAL;
     private final Button signBtn = new Button("Firmar PDF");
     private final Button selectBtn = new Button("Seleccionar PDF...");
+    private final CheckBox signAllPagesCheckBox = new CheckBox("Firmar todas las páginas");
     private final Label pageLabel = new Label("Página 1 de 1");
     private Button prevPageBtn;
     private Button nextPageBtn;
     private final Label fileInfoLabel = new Label("Ningún documento seleccionado.");
     private final Label stepPdfLabel = new Label("○ PDF cargado");
-    private final Label stepPositionLabel = new Label("○ Posicioná la firma");
-    private final Label stepSignLabel = new Label("○ Firmá con tu token");
+    private final Label stepPositionLabel = new Label("○ Posicione la firma");
+    private final Label stepSignLabel = new Label("○ Firme con su token");
     private final Label stepSaveLabel = new Label("○ PDF guardado automáticamente");
-    private final Label previewHelpLabel = new Label("Seleccioná un PDF para comenzar.");
+    private final Label previewHelpLabel = new Label("Seleccione un PDF para comenzar.");
 
     // PDF preview canvas + draggable signature box (integrated, no separate dialog)
     // Leave room for page navigation and contextual help below the preview.
@@ -114,7 +137,7 @@ public class MainWindow {
         this.stage = stage;
         stage.setTitle("FirmaUNA");
         stage.setMinWidth(1050);
-        stage.setMinHeight(680);
+        stage.setMinHeight(760);
 
         reasonCombo.getItems().addAll(
             "Soy el autor del documento",
@@ -146,7 +169,7 @@ public class MainWindow {
     }
 
     public void show() {
-        stage.setScene(new Scene(buildRoot(), 1100, 720));
+        stage.setScene(new Scene(buildRoot(), 1100, 820));
         stage.show();
     }
 
@@ -199,11 +222,12 @@ public class MainWindow {
         left.getChildren().addAll(canvas, nav, previewHelpLabel);
 
         // RIGHT: controls (no PIN field; PIN is requested in a modal on Firmar)
-        VBox controls = new VBox(10);
-        controls.setPadding(new Insets(15));
+        VBox controls = new VBox(SPACE_NORMAL);
+        controls.setPadding(new Insets(SPACE_NORMAL));
         controls.setMinWidth(300);
 
         selectBtn.setMaxWidth(Double.MAX_VALUE);
+        selectBtn.setStyle(SECONDARY_BUTTON_STYLE);
         selectBtn.setOnAction(e -> openFile());
 
         fileInfoLabel.setWrapText(true);
@@ -222,33 +246,39 @@ public class MainWindow {
         verticalLayout.setUserData(StampLayout.VERTICAL);
         horizontalLayout.setStyle(selectedLayoutCardStyle());
         HBox layoutChoices = new HBox(10, horizontalLayout, verticalLayout);
+        signAllPagesCheckBox.setStyle("-fx-font-size: 11px;");
+        Label allPagesHelp = new Label("La misma posición se aplicará en todas las páginas.");
+        allPagesHelp.setStyle("-fx-text-fill: #777; -fx-font-size: 10px;");
+        allPagesHelp.setWrapText(true);
 
         signBtn.setMaxWidth(Double.MAX_VALUE);
-        signBtn.setStyle("-fx-background-color: #dc3545; -fx-text-fill: white; -fx-font-weight: bold;");
+        signBtn.setStyle(PRIMARY_BUTTON_STYLE);
         signBtn.setOnAction(e -> signDocument());
 
         VBox documentSection = createSection(
-            "1. Elegí el documento",
-            "Seleccioná el PDF que querés firmar.",
+            "1. Seleccione el documento",
+            "Seleccione el PDF que desea firmar.",
             selectBtn,
             fileInfoLabel
         );
         VBox signatureDataSection = createSection(
-            "2. Revisá tus datos",
-            "Confirmá el certificado, motivo y rol.",
+            "2. Revise sus datos",
+            "Confirme el certificado, motivo y rol.",
             new Label("Motivo:"),
             reasonCombo,
             new Label("Cargo:"),
             roleField
         );
         VBox formatSection = createSection(
-            "3. Elegí el formato",
-            "Elegí horizontal o vertical y arrastrá la firma en el PDF.",
+            "3. Seleccione el formato",
+            "Seleccione horizontal o vertical y arrastre la firma en el PDF.",
             new Label("Formato de estampilla:"),
-            layoutChoices
+            layoutChoices,
+            signAllPagesCheckBox,
+            allPagesHelp
         );
         VBox actionsSection = createSection(
-            "4. Firmá tu documento",
+            "4. Firme su documento",
             "La app guarda el archivo automáticamente.",
             signBtn,
             createWorkflowSection(),
@@ -283,7 +313,7 @@ public class MainWindow {
         sectionHelp.setWrapText(true);
         sectionHelp.setStyle("-fx-text-fill: #777; -fx-font-size: 10px;");
         VBox sectionHeader = new VBox(2, sectionTitle, sectionHelp);
-        VBox section = new VBox(6);
+        VBox section = new VBox(SPACE_SMALL);
         section.getChildren().add(sectionHeader);
         section.getChildren().addAll(content);
         return section;
@@ -305,8 +335,8 @@ public class MainWindow {
             String marker = completed ? "✓ " : active ? "● " : "○ ";
             String label = switch (index) {
                 case 0 -> "PDF cargado";
-                case 1 -> "Posicioná la firma";
-                case 2 -> "Firmá con tu token";
+                case 1 -> "Posicione la firma";
+                case 2 -> "Firme con su token";
                 default -> "PDF guardado automáticamente";
             };
             steps[index].setText(marker + label);
@@ -320,9 +350,9 @@ public class MainWindow {
 
     private void updatePreviewHelp() {
         if (selectedStampLayout() == StampLayout.VERTICAL) {
-            previewHelpLabel.setText("Arrastrá la estampilla vertical hasta la ubicación deseada. El logo queda arriba y el texto abajo.");
+            previewHelpLabel.setText("Arrastre la estampilla vertical hasta la ubicación deseada. El logo queda arriba y el texto abajo.");
         } else {
-            previewHelpLabel.setText("Arrastrá la estampilla horizontal hasta la ubicación deseada.");
+            previewHelpLabel.setText("Arrastre la estampilla horizontal hasta la ubicación deseada.");
         }
     }
 
@@ -406,7 +436,7 @@ public class MainWindow {
         updatePageNavigation();
         fileInfoLabel.setText("Ningún documento seleccionado.");
         statusLabel.setText("Seleccione un PDF para firmar.");
-        previewHelpLabel.setText("Seleccioná un PDF para comenzar.");
+        previewHelpLabel.setText("Seleccione un PDF para comenzar.");
         updateWorkflow(0);
         signBtn.setDisable(false);
         updateDocumentChooserLabel();
@@ -737,16 +767,32 @@ public class MainWindow {
             showAlert("Primero seleccione un archivo PDF.");
             return;
         }
+        List<Integer> targetPages = signAllPagesCheckBox.isSelected()
+            ? IntStream.range(0, totalPages).boxed().toList()
+            : List.of(currentPage);
+        PDFSigner.NormalizedStampPosition normalizedPosition;
+        try {
+            normalizedPosition = PDFSigner.normalizeStampPosition(
+                currentDoc.getPage(currentPage).getCropBox(), getPdfRect(), selectedStampLayout(),
+                (float) STAMP_SAFE_MARGIN_PT, (float) stampTopOverflowPt());
+            for (int page : targetPages) {
+                PDFSigner.resolveStampPosition(currentDoc.getPage(page).getCropBox(), normalizedPosition,
+                    selectedStampLayout(), (float) STAMP_SAFE_MARGIN_PT, (float) stampTopOverflowPt());
+            }
+        } catch (IllegalArgumentException exception) {
+            showAlert("No hay espacio suficiente en todas las páginas para el formato seleccionado.");
+            return;
+        }
         SigningRequest request = new SigningRequest(
             selectedPdf,
             reasonCombo.getSelectionModel().getSelectedItem(),
             roleField.getText().trim(),
-            currentPage,
-            getPdfRect(),
+            targetPages,
+            normalizedPosition,
             selectedStampLayout()
         );
         updateWorkflow(2);
-        previewHelpLabel.setText("Validá el PIN del token para completar la firma.");
+        previewHelpLabel.setText("Valide el PIN del token para completar la firma.");
         openPinModal(request);
     }
 
@@ -757,12 +803,19 @@ public class MainWindow {
         modal.setTitle("PIN del Token");
 
         PasswordField pinField = new PasswordField();
-        pinField.setPromptText("PIN de su token Bit4id");
+        pinField.setPromptText("PIN de su token");
 
-        Button okBtn = new Button("Firmar");
-        okBtn.setStyle("-fx-background-color: #198754; -fx-text-fill: white;");
+        Label cue = new Label("CONFIRMACIÓN DE SEGURIDAD");
+        cue.setStyle(MODAL_CUE_STYLE);
+        Label heading = new Label("Ingrese su PIN");
+        heading.setStyle(MODAL_HEADING_STYLE);
+        Label help = new Label("Usamos el PIN para autorizar la firma del PDF.");
+        help.setStyle(MODAL_HELP_STYLE);
+
+        Button okBtn = new Button("Firmar PDF");
+        okBtn.setStyle(PRIMARY_BUTTON_STYLE);
         Button cancelBtn = new Button("Cancelar");
-        cancelBtn.setStyle("-fx-background-color: #6c757d; -fx-text-fill: white;");
+        cancelBtn.setStyle(NEUTRAL_BUTTON_STYLE);
 
         AtomicBoolean pinSubmitted = new AtomicBoolean(false);
         okBtn.setOnAction(e -> {
@@ -780,12 +833,12 @@ public class MainWindow {
             }
         });
 
-        HBox buttons = new HBox(10, cancelBtn, okBtn);
+        HBox buttons = new HBox(SPACE_SMALL, okBtn, cancelBtn);
         buttons.setAlignment(Pos.CENTER);
-        VBox root = new VBox(10, new Label("Ingrese el PIN de su token:"), pinField, buttons);
-        root.setPadding(new Insets(15));
+        VBox root = new VBox(SPACE_NORMAL, cue, heading, help, pinField, buttons);
+        root.setPadding(new Insets(SPACE_SECTION));
         root.setAlignment(Pos.CENTER);
-        modal.setScene(new Scene(root, 320, 150));
+        modal.setScene(new Scene(root, 380, 250));
         modal.showAndWait();
     }
 
@@ -830,40 +883,63 @@ public class MainWindow {
     }
 
     private void openCertificateSelectionModal(TokenProvider provider,
-                                                List<TokenProvider.CertificateChoice> choices,
-                                                SigningRequest request) {
+                                                 List<TokenProvider.CertificateChoice> choices,
+                                                 SigningRequest request) {
         Stage modal = new Stage();
         modal.initModality(Modality.APPLICATION_MODAL);
         modal.initOwner(stage);
-        modal.setTitle("Elegí tu certificado");
+        modal.setTitle("Seleccione su certificado");
 
         ToggleGroup certificateGroup = new ToggleGroup();
-        VBox certificateList = new VBox(10);
-        for (int index = 0; index < choices.size(); index++) {
-            TokenProvider.CertificateChoice choice = choices.get(index);
-            RadioButton option = new RadioButton(extractCN(choice.certificate().getSubjectX500Principal().getName()));
+        Label cue = new Label("CERTIFICADO DE FIRMA");
+        cue.setStyle(MODAL_CUE_STYLE);
+        Label heading = new Label("Seleccione su certificado");
+        heading.setStyle(MODAL_HEADING_STYLE);
+        Label help = new Label("Seleccione el certificado que utilizará para firmar este PDF.");
+        help.setStyle(MODAL_HELP_STYLE);
+
+        VBox certificateList = new VBox(SPACE_SMALL);
+        List<TokenProvider.CertificateChoice> orderedChoices = choices.stream()
+            .sorted(Comparator.comparing(choice -> !isCertificateValid(choice.certificate())))
+            .toList();
+        boolean hasValidCertificate = orderedChoices.stream()
+            .anyMatch(choice -> isCertificateValid(choice.certificate()));
+        for (TokenProvider.CertificateChoice choice : orderedChoices) {
+            boolean valid = isCertificateValid(choice.certificate());
+            RadioButton option = new RadioButton(valid ? "Válido" : "Certificado vencido");
             option.setToggleGroup(certificateGroup);
             option.setUserData(choice);
-            option.setSelected(index == 0);
             option.setStyle("-fx-font-weight: bold;");
+            option.setDisable(!valid);
 
-            Label details = new Label(
-                "Titular: " + choice.certificate().getSubjectX500Principal().getName() +
-                "\nEmisor: " + choice.certificate().getIssuerX500Principal().getName() +
-                "\nVence: " + formatCertificateDate(choice.certificate()) +
-                "\nEstado: " + certificateStatus(choice.certificate())
-            );
-            details.setWrapText(true);
-            details.setStyle("-fx-text-fill: #555; -fx-font-size: 11px;");
-            VBox card = new VBox(4, option, details);
-            card.setPadding(new Insets(10));
-            card.setStyle("-fx-background-color: #f8f9fa; -fx-border-color: #c8c8c8; -fx-border-radius: 4px;");
+            Label holder = new Label(certificateCommonName(choice.certificate().getSubjectX500Principal()));
+            Label issuer = new Label("Emisor: " + certificateCommonName(choice.certificate().getIssuerX500Principal()));
+            Label expiration = new Label("Vence: " + formatCertificateDate(choice.certificate()));
+            for (Label line : List.of(holder, issuer, expiration)) {
+                line.setWrapText(true);
+                line.setStyle("-fx-text-fill: " + (valid ? "#334155" : "#7a7a7a") + "; -fx-font-size: 11px;");
+            }
+            holder.setStyle("-fx-text-fill: " + (valid ? "#1f2937" : "#777") + "; -fx-font-size: 12px; -fx-font-weight: bold;");
+            VBox card = new VBox(SPACE_SMALL, option, holder, issuer, expiration);
+            card.setPadding(new Insets(SPACE_NORMAL));
+            card.setStyle(certificateCardStyle(valid, false));
+            option.selectedProperty().addListener((observable, wasSelected, selected) ->
+                card.setStyle(certificateCardStyle(valid, selected)));
+            if (valid && certificateGroup.getSelectedToggle() == null) {
+                option.setSelected(true);
+            }
             certificateList.getChildren().add(card);
         }
 
         Button signWithCertificateBtn = new Button("Firmar con este certificado");
-        signWithCertificateBtn.setStyle("-fx-background-color: #198754; -fx-text-fill: white;");
+        signWithCertificateBtn.setStyle(PRIMARY_BUTTON_STYLE);
+        signWithCertificateBtn.setDisable(!hasValidCertificate);
         Button cancelBtn = new Button("Cancelar");
+        cancelBtn.setStyle(NEUTRAL_BUTTON_STYLE);
+        Label availabilityMessage = new Label(hasValidCertificate ? "" :
+            "No hay un certificado válido disponible para firmar.");
+        availabilityMessage.setWrapText(true);
+        availabilityMessage.setStyle("-fx-text-fill: #8a5a00; -fx-font-size: 12px;");
         AtomicBoolean certificateSelected = new AtomicBoolean(false);
         signWithCertificateBtn.setOnAction(e -> {
             RadioButton selected = (RadioButton) certificateGroup.getSelectedToggle();
@@ -888,27 +964,49 @@ public class MainWindow {
             }
         });
 
-        HBox actions = new HBox(10, cancelBtn, signWithCertificateBtn);
+        HBox actions = new HBox(SPACE_SMALL, signWithCertificateBtn, cancelBtn);
         actions.setAlignment(Pos.CENTER);
-        VBox root = new VBox(14, new Label("Elegí el certificado con el que querés firmar:"), certificateList, actions);
-        root.setPadding(new Insets(18));
-        modal.setScene(new Scene(root, 640, Math.min(220 + choices.size() * 130, 700)));
+        VBox root = new VBox(SPACE_NORMAL, cue, heading, help, certificateList, availabilityMessage, actions);
+        root.setPadding(new Insets(SPACE_SECTION));
+        modal.setScene(new Scene(root, 640, Math.min(250 + orderedChoices.size() * 145, 700)));
         modal.showAndWait();
     }
 
     private String formatCertificateDate(X509Certificate certificate) {
-        return DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.getDefault())
+        return DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm 'GMT'XXX", Locale.getDefault())
             .withZone(ZoneId.systemDefault())
             .format(certificate.getNotAfter().toInstant());
     }
 
-    private String certificateStatus(X509Certificate certificate) {
-        Instant now = Instant.now();
-        Instant expiration = certificate.getNotAfter().toInstant();
-        if (expiration.isBefore(now)) {
-            return "Vencido";
+    private boolean isCertificateValid(X509Certificate certificate) {
+        return certificate.getNotAfter().toInstant().isAfter(Instant.now());
+    }
+
+    private String certificateCardStyle(boolean valid, boolean selected) {
+        if (!valid) {
+            return "-fx-background-color: #eeeeee; -fx-border-color: #c7c7c7; -fx-border-radius: 4px; " +
+                "-fx-background-radius: 4px; -fx-opacity: 0.78;";
         }
-        return expiration.isBefore(now.plusSeconds(30L * 24 * 60 * 60)) ? "Por vencer" : "Válido";
+        if (selected) {
+            return "-fx-background-color: #e7f4ec; -fx-border-color: #198754; -fx-border-width: 2px; " +
+                "-fx-border-radius: 4px; -fx-background-radius: 4px;";
+        }
+        return "-fx-background-color: #ffffff; -fx-border-color: #c8d2dc; -fx-border-radius: 4px; " +
+            "-fx-background-radius: 4px;";
+    }
+
+    private String certificateCommonName(javax.security.auth.x500.X500Principal principal) {
+        try {
+            LdapName name = new LdapName(principal.getName(javax.security.auth.x500.X500Principal.RFC2253));
+            for (Rdn rdn : name.getRdns()) {
+                if ("CN".equalsIgnoreCase(rdn.getType())) {
+                    return String.valueOf(rdn.getValue());
+                }
+            }
+        } catch (InvalidNameException ignored) {
+            // Fall back to the readable distinguished name supplied by the certificate.
+        }
+        return principal.getName();
     }
 
     private void restoreAfterSigningCancellation() {
@@ -945,8 +1043,8 @@ public class MainWindow {
                     request.inputPdf(), temporaryOutput.toFile(),
                     cert, privateKey, certChain,
                     request.reason(), "Puno, Per\u00fa", cn,
-                    signerText, request.page(),
-                    (float) request.rectangle()[0], (float) request.rectangle()[1], request.layout()
+                     signerText, request.pages(), request.normalizedPosition(), request.layout(),
+                     (float) STAMP_SAFE_MARGIN_PT, (float) stampTopOverflowPt()
                     );
                     Path savedOutput = moveToNextSignedOutput(temporaryOutput, request.inputPdf());
                     Platform.runLater(() -> loadSavedSignedPdf(savedOutput.toFile()));
@@ -1025,8 +1123,8 @@ public class MainWindow {
             " -fx-min-height: 60px; -fx-max-height: 60px; -fx-font-size: 28px;" +
             " -fx-font-weight: bold;");
 
-        Label heading = new Label("Tu documento fue firmado");
-        heading.setStyle("-fx-text-fill: #198754; -fx-font-weight: bold; -fx-font-size: 18px;");
+        Label heading = new Label("Su documento fue firmado");
+        heading.setStyle(MODAL_HEADING_STYLE);
 
         Label fileNameLabel = new Label(savedPdf.getName());
         fileNameLabel.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
@@ -1041,35 +1139,35 @@ public class MainWindow {
         details.setTextAlignment(TextAlignment.CENTER);
 
         Button signAgainBtn = new Button("✔ Volver a firmar");
-        signAgainBtn.setStyle("-fx-background-color: #198754; -fx-text-fill: white; -fx-font-weight: bold;");
+        signAgainBtn.setStyle(PRIMARY_BUTTON_STYLE);
         signAgainBtn.setOnAction(e -> modal.close());
-        Button showInFinderBtn = new Button("📂 Ver ubicación");
-        showInFinderBtn.setStyle("-fx-background-color: #6c757d; -fx-text-fill: white;");
-        Label finderMessage = new Label();
-        finderMessage.setWrapText(true);
-        finderMessage.setStyle("-fx-text-fill: #a94442; -fx-font-size: 11px;");
-        showInFinderBtn.setOnAction(e -> revealInFinder(savedPdf, finderMessage));
+        Button revealLocationBtn = new Button("📂 Ver ubicación");
+        revealLocationBtn.setStyle(SECONDARY_BUTTON_STYLE);
+        Label revealMessage = new Label();
+        revealMessage.setWrapText(true);
+        revealMessage.setStyle("-fx-text-fill: #a94442; -fx-font-size: 11px;");
+        revealLocationBtn.setOnAction(e -> revealDocumentLocation(savedPdf, revealMessage));
 
-        HBox actions = new HBox(10, showInFinderBtn, signAgainBtn);
+        HBox actions = new HBox(SPACE_SMALL, signAgainBtn, revealLocationBtn);
         actions.setAlignment(Pos.CENTER);
 
-        Label tip = new Label("Consejo: podés firmar este PDF varias veces si necesitás más firmas.");
+        Label tip = new Label("Consejo: puede firmar este PDF varias veces si necesita más firmas.");
         tip.setWrapText(true);
         tip.setStyle("-fx-text-fill: #999; -fx-font-size: 11px;");
         tip.setAlignment(Pos.CENTER);
         tip.setTextAlignment(TextAlignment.CENTER);
 
-        VBox root = new VBox(10, successIcon, heading, fileNameLabel, details,
-            actions, finderMessage, new Separator(), tip);
-        root.setPadding(new Insets(20));
+        VBox root = new VBox(SPACE_NORMAL, successIcon, heading, fileNameLabel, details,
+            actions, revealMessage, new Separator(), tip);
+        root.setPadding(new Insets(SPACE_SECTION));
         root.setAlignment(Pos.CENTER);
         modal.setScene(new Scene(root, 430, 340));
         modal.showAndWait();
     }
 
-    private void revealInFinder(File savedPdf, Label finderMessage) {
+    private void revealDocumentLocation(File savedPdf, Label revealMessage) {
         if (!System.getProperty("os.name", "").startsWith("Mac")) {
-            finderMessage.setText("Finder solo está disponible en macOS.");
+            revealMessage.setText("No se pudo mostrar la ubicación del archivo.");
             return;
         }
 
@@ -1078,18 +1176,19 @@ public class MainWindow {
             try {
                 Process process = new ProcessBuilder("open", "-R", savedPath.toString()).start();
                 if (process.waitFor() != 0) {
-                    Platform.runLater(() -> finderMessage.setText("No se pudo mostrar el archivo en Finder."));
+                    Platform.runLater(() -> revealMessage.setText("No se pudo mostrar la ubicación del archivo."));
                 }
             } catch (Exception e) {
-                Platform.runLater(() -> finderMessage.setText("No se pudo mostrar el archivo en Finder."));
+                Platform.runLater(() -> revealMessage.setText("No se pudo mostrar la ubicación del archivo."));
             }
         });
         finder.setDaemon(true);
         finder.start();
     }
 
-    private record SigningRequest(File inputPdf, String reason, String role, int page,
-                                  double[] rectangle, StampLayout layout) { }
+    private record SigningRequest(File inputPdf, String reason, String role, List<Integer> pages,
+                                  PDFSigner.NormalizedStampPosition normalizedPosition,
+                                  StampLayout layout) { }
 
     private String extractCN(String dn) {
         for (String part : dn.split(",")) {
@@ -1102,6 +1201,7 @@ public class MainWindow {
     private void showAlert(String msg) {
         Alert alert = new Alert(Alert.AlertType.WARNING);
         alert.setTitle("Atención");
+        alert.setHeaderText("No se puede firmar todavía");
         alert.setContentText(msg);
         alert.showAndWait();
     }

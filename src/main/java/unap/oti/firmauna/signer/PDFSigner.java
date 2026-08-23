@@ -90,10 +90,34 @@ public class PDFSigner {
                                X509Certificate cert, PrivateKey privateKey,
                                java.security.cert.Certificate[] chain,
                                 String reason, String location, String contact,
-                                String signerText, int page,
-                                float x, float y, StampLayout layout) throws Exception {
+                                 String signerText, int page,
+                                 float x, float y, StampLayout layout) throws Exception {
+        try (PDDocument source = Loader.loadPDF(inputPdf)) {
+            if (page < 0 || page >= source.getNumberOfPages()) {
+                throw new IllegalArgumentException("Selected page is outside the document");
+            }
+            NormalizedStampPosition position = normalizeStampPosition(source.getPage(page).getCropBox(),
+                new double[]{x, y}, layout, 0f, 0f);
+            signPDF(inputPdf, outputPdf, cert, privateKey, chain, reason, location, contact, signerText,
+                List.of(page), position, layout, 0f, 0f);
+        }
+    }
+
+    /**
+     * Adds all requested visual stamps before producing one detached PDF signature.
+     */
+    public static void signPDF(File inputPdf, File outputPdf,
+                               X509Certificate cert, PrivateKey privateKey,
+                               java.security.cert.Certificate[] chain,
+                               String reason, String location, String contact,
+                               String signerText, List<Integer> pages,
+                               NormalizedStampPosition normalizedPosition, StampLayout layout,
+                               float safeMargin, float topOverflow) throws Exception {
 
         try (PDDocument doc = Loader.loadPDF(inputPdf)) {
+            if (pages == null || pages.isEmpty()) {
+                throw new IllegalArgumentException("At least one page must be selected");
+            }
 
             // Step 1: Add invisible digital signature
             PDSignature signature = new PDSignature();
@@ -113,30 +137,84 @@ public class PDFSigner {
             signatureOptions.setPreferredSignatureSize(16384);
             doc.addSignature(signature, signer, signatureOptions);
 
-            // Step 2: Add visible stamp with logo + text
-            if (page >= 0 && page < doc.getNumberOfPages()) {
+            // Step 2: Add visible stamps while retaining one detached signature.
+            PDImageXObject logo = loadLogo(doc);
+            for (int page : pages) {
+                if (page < 0 || page >= doc.getNumberOfPages()) {
+                    throw new IllegalArgumentException("Selected page is outside the document");
+                }
                 PDPage pg = doc.getPage(page);
+                float[] position = resolveStampPosition(pg.getCropBox(), normalizedPosition, layout,
+                    safeMargin, topOverflow);
                 try (PDPageContentStream cs = new PDPageContentStream(
                         doc, pg, PDPageContentStream.AppendMode.APPEND, true, true)) {
-
-                    // Load logo from classpath
-                    PDImageXObject logo = null;
-                    try (InputStream is = PDFSigner.class.getClassLoader().getResourceAsStream("assets/LogoUNA.png")) {
-                        if (is != null) {
-                            logo = PDImageXObject.createFromByteArray(doc, is.readAllBytes(), "LogoUNA");
-                        }
-                    }
-
                     if (layout == StampLayout.VERTICAL) {
-                        drawVerticalStamp(cs, logo, signerText, x, y, layout);
+                        drawVerticalStamp(cs, logo, signerText, position[0], position[1], layout);
                     } else {
-                        drawHorizontalStamp(cs, logo, signerText, x, y, layout);
+                        drawHorizontalStamp(cs, logo, signerText, position[0], position[1], layout);
                     }
                 }
             }
 
             doc.saveIncremental(new java.io.FileOutputStream(outputPdf));
         }
+    }
+
+    private static PDImageXObject loadLogo(PDDocument document) throws IOException {
+        try (InputStream input = PDFSigner.class.getClassLoader().getResourceAsStream("assets/LogoUNA.png")) {
+            return input == null ? null
+                : PDImageXObject.createFromByteArray(document, input.readAllBytes(), "LogoUNA");
+        }
+    }
+
+    public record NormalizedStampPosition(float horizontal, float vertical) { }
+
+    /**
+     * Converts a stamp's lower-left position into the CropBox's safe placement area.
+     */
+    public static NormalizedStampPosition normalizeStampPosition(PDRectangle cropBox, double[] rectangle,
+                                                                  StampLayout layout, float safeMargin,
+                                                                  float topOverflow) {
+        float[] bounds = stampBounds(cropBox, layout, safeMargin, topOverflow);
+        return new NormalizedStampPosition(
+            normalize((float) rectangle[0], bounds[0], bounds[1]),
+            normalize((float) rectangle[1], bounds[2], bounds[3]));
+    }
+
+    /**
+     * Resolves a normalized safe placement for a page with its own visible CropBox.
+     */
+    public static float[] resolveStampPosition(PDRectangle cropBox, NormalizedStampPosition position,
+                                               StampLayout layout, float safeMargin, float topOverflow) {
+        float[] bounds = stampBounds(cropBox, layout, safeMargin, topOverflow);
+        return new float[]{
+            interpolate(bounds[0], bounds[1], position.horizontal()),
+            interpolate(bounds[2], bounds[3], position.vertical())
+        };
+    }
+
+    private static float[] stampBounds(PDRectangle cropBox, StampLayout layout, float safeMargin,
+                                       float topOverflow) {
+        float minX = cropBox.getLowerLeftX() + safeMargin;
+        float maxX = cropBox.getUpperRightX() - layout.getWidth() - safeMargin;
+        float minY = cropBox.getLowerLeftY() + safeMargin;
+        float maxY = cropBox.getUpperRightY() - layout.getHeight() - safeMargin - topOverflow;
+        if (maxX < minX || maxY < minY) {
+            throw new IllegalArgumentException("Page CropBox is too small for the selected stamp layout");
+        }
+        return new float[]{minX, maxX, minY, maxY};
+    }
+
+    private static float normalize(float value, float min, float max) {
+        return max == min ? 0f : clamp((value - min) / (max - min), 0f, 1f);
+    }
+
+    private static float interpolate(float min, float max, float normalized) {
+        return min + (max - min) * clamp(normalized, 0f, 1f);
+    }
+
+    private static float clamp(float value, float min, float max) {
+        return Math.max(min, Math.min(value, max));
     }
 
     private static void drawHorizontalStamp(PDPageContentStream cs, PDImageXObject logo,
