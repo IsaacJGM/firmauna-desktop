@@ -1,5 +1,8 @@
 package unap.oti.firmauna.pkcs11;
 
+import unap.oti.firmauna.certificate.CertificateChoice;
+import unap.oti.firmauna.certificate.SigningProvider;
+
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -15,28 +18,21 @@ import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Enumeration;
+import java.util.concurrent.Semaphore;
 
 /**
  * Loads and authenticates against Bit4id tokenME FIPS v3 via PKCS#11.
  */
-public class TokenProvider {
+public class TokenProvider implements SigningProvider {
 
     private static final String LIB_PATH = "/Library/bit4id/pkcs11/libbit4xpki.dylib";
+    private static final Semaphore SESSION_PERMIT = new Semaphore(1);
     private Provider configuredProvider;
     private KeyStore sessionKeyStore;
     private String keyAlias;
     private char[] pin;
+    private boolean sessionPermitHeld;
     private List<CertificateChoice> certificateChoices = List.of();
-
-    /**
-     * A signing key available in the authenticated token session.
-     */
-    public record CertificateChoice(String alias, X509Certificate certificate,
-                                    List<Certificate> certificateChain) {
-        public CertificateChoice {
-            certificateChain = List.copyOf(certificateChain);
-        }
-    }
 
     /**
      * Initialize the PKCS#11 provider and login to the token.
@@ -46,9 +42,13 @@ public class TokenProvider {
      * SunPKCS11.load() alone does not validate the PIN, so without
      * this check any PIN would appear to "work" but signing would fail.
      */
-    public void login(String pin) throws Exception {
-        Path cfg = createConfigFile();
+    @Override
+    public void open(char[] pin) throws Exception {
+        SESSION_PERMIT.acquire();
+        sessionPermitHeld = true;
+        Path cfg = null;
         try {
+            cfg = createConfigFile();
             // Remove stale instance
             Provider stale = Security.getProvider("SunPKCS11-Bit4id");
             if (stale != null) Security.removeProvider("SunPKCS11-Bit4id");
@@ -60,8 +60,8 @@ public class TokenProvider {
 
             // Load once — this opens the single token session.
             this.sessionKeyStore = KeyStore.getInstance("PKCS11", configured);
-            this.sessionKeyStore.load(null, pin.toCharArray());
-            this.pin = pin.toCharArray();
+            this.sessionKeyStore.load(null, pin);
+            this.pin = pin.clone();
 
             // Enumerate every signing key alias and VALIDATE PIN immediately.
             // SunPKCS11.load() does NOT validate the PIN — only getKey()
@@ -86,9 +86,24 @@ public class TokenProvider {
             // Access one private key while keeping the same PKCS#11 session.
             this.sessionKeyStore.getKey(choices.getFirst().alias(), this.pin);
             this.certificateChoices = List.copyOf(choices);
+        } catch (Exception exception) {
+            logout();
+            throw exception;
         } finally {
-            try { Files.deleteIfExists(cfg); } catch (IOException ignored) {}
+            if (cfg != null) {
+                try { Files.deleteIfExists(cfg); } catch (IOException ignored) {}
+            }
         }
+    }
+
+    @Override
+    public boolean requiresApplicationPin() {
+        return true;
+    }
+
+    @Override
+    public String getDisplayName() {
+        return "token";
     }
 
     /**
@@ -110,6 +125,7 @@ public class TokenProvider {
         return keyAlias;
     }
 
+    @Override
     public List<CertificateChoice> getCertificateChoices() throws Exception {
         getKeyStore();
         return certificateChoices;
@@ -118,6 +134,7 @@ public class TokenProvider {
     /**
      * Selects one of the aliases discovered during this login session.
      */
+    @Override
     public void selectKeyAlias(String alias) throws Exception {
         getKeyStore();
         if (certificateChoices.stream().noneMatch(choice -> choice.alias().equals(alias))) {
@@ -126,15 +143,20 @@ public class TokenProvider {
         this.keyAlias = alias;
     }
 
+    @Override
     public X509Certificate getCertificate() throws Exception {
         return (X509Certificate) getKeyStore().getCertificate(getKeyAlias());
     }
 
+    @Override
     public java.security.cert.Certificate[] getCertificateChain() throws Exception {
         Certificate[] chain = getKeyStore().getCertificateChain(getKeyAlias());
-        return chain == null ? null : chain.clone();
+        return chain == null || chain.length == 0
+            ? new Certificate[]{getCertificate()}
+            : chain.clone();
     }
 
+    @Override
     public PrivateKey getPrivateKey() throws Exception {
         return (PrivateKey) getKeyStore().getKey(getKeyAlias(), pin);
     }
@@ -159,6 +181,15 @@ public class TokenProvider {
             Arrays.fill(this.pin, '\0');
             this.pin = null;
         }
+        if (sessionPermitHeld) {
+            sessionPermitHeld = false;
+            SESSION_PERMIT.release();
+        }
+    }
+
+    @Override
+    public void close() {
+        logout();
     }
 
     private Path createConfigFile() throws IOException {

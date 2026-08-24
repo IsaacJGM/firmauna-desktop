@@ -14,6 +14,7 @@ import javafx.scene.control.ContentDisplay;
 import javafx.scene.control.Label;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.RadioButton;
+import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.TextField;
 import javafx.scene.control.ToggleButton;
@@ -36,9 +37,13 @@ import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.rendering.PDFRenderer;
 
+import unap.oti.firmauna.certificate.CertificateChoice;
+import unap.oti.firmauna.certificate.CertificatePolicy;
+import unap.oti.firmauna.certificate.SigningProvider;
 import unap.oti.firmauna.pkcs11.TokenProvider;
 import unap.oti.firmauna.signer.PDFSigner;
 import unap.oti.firmauna.signer.PDFSigner.StampLayout;
+import unap.oti.firmauna.windows.WindowsCertificateProvider;
 
 import javax.imageio.ImageIO;
 import javax.naming.InvalidNameException;
@@ -58,10 +63,14 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.IntStream;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainWindow {
 
@@ -96,7 +105,7 @@ public class MainWindow {
     private final Label fileInfoLabel = new Label("Ningún documento seleccionado.");
     private final Label stepPdfLabel = new Label("○ PDF cargado");
     private final Label stepPositionLabel = new Label("○ Posicione la firma");
-    private final Label stepSignLabel = new Label("○ Firme con su token");
+    private final Label stepSignLabel = new Label("○ Firme con su certificado");
     private final Label stepSaveLabel = new Label("○ PDF guardado automáticamente");
     private final Label previewHelpLabel = new Label("Seleccione un PDF para comenzar.");
 
@@ -110,6 +119,7 @@ public class MainWindow {
     private X509Certificate cert;
     private PrivateKey privateKey;
     private java.security.cert.Certificate[] certChain;
+    private final AtomicLong signingAttemptSequence = new AtomicLong();
 
     private int currentPage = 0;
     private int totalPages = 1;
@@ -128,6 +138,7 @@ public class MainWindow {
     private static final double STAMP_SAFE_MARGIN_PT = 5.0;
     // The existing horizontal logo placement extends three points above its layout box.
     private static final double HORIZONTAL_LOGO_TOP_OVERFLOW_PT = 3.0;
+    private static final Pattern SIGNED_OUTPUT_PATTERN = Pattern.compile("^(.*) \\[(F+)U]$");
     private double boxWcanvas = StampLayout.HORIZONTAL.getWidth(), boxHcanvas = StampLayout.HORIZONTAL.getHeight();
     private Image pageImage;
     private final Image stampPreviewLogo = new Image(
@@ -336,7 +347,7 @@ public class MainWindow {
             String label = switch (index) {
                 case 0 -> "PDF cargado";
                 case 1 -> "Posicione la firma";
-                case 2 -> "Firme con su token";
+                case 2 -> "Firme con su certificado";
                 default -> "PDF guardado automáticamente";
             };
             steps[index].setText(marker + label);
@@ -417,6 +428,7 @@ public class MainWindow {
     }
 
     private void resetDocumentState() {
+        signingAttemptSequence.incrementAndGet();
         if (currentDoc != null) {
             try {
                 currentDoc.close();
@@ -767,6 +779,9 @@ public class MainWindow {
             showAlert("Primero seleccione un archivo PDF.");
             return;
         }
+        if (!canWriteSignedOutput(selectedPdf)) {
+            return;
+        }
         List<Integer> targetPages = signAllPagesCheckBox.isSelected()
             ? IntStream.range(0, totalPages).boxed().toList()
             : List.of(currentPage);
@@ -784,6 +799,7 @@ public class MainWindow {
             return;
         }
         SigningRequest request = new SigningRequest(
+            signingAttemptSequence.incrementAndGet(),
             selectedPdf,
             reasonCombo.getSelectionModel().getSelectedItem(),
             roleField.getText().trim(),
@@ -792,8 +808,13 @@ public class MainWindow {
             selectedStampLayout()
         );
         updateWorkflow(2);
-        previewHelpLabel.setText("Valide el PIN del token para completar la firma.");
-        openPinModal(request);
+        if (isWindows()) {
+            previewHelpLabel.setText("Seleccione un certificado y autorice la firma cuando Windows lo solicite.");
+            openProviderAndChooseCertificate(null, request);
+        } else {
+            previewHelpLabel.setText("Valide el PIN del token para completar la firma.");
+            openPinModal(request);
+        }
     }
 
     private void openPinModal(SigningRequest request) {
@@ -823,7 +844,7 @@ public class MainWindow {
             if (!pin.isBlank()) {
                 pinSubmitted.set(true);
                 modal.close();
-                doLoginAndChooseCertificate(pin.trim(), request);
+                openProviderAndChooseCertificate(pin.trim().toCharArray(), request);
             }
         });
         cancelBtn.setOnAction(e -> modal.close());
@@ -842,24 +863,42 @@ public class MainWindow {
         modal.showAndWait();
     }
 
-    private void doLoginAndChooseCertificate(String pin, SigningRequest request) {
-        statusLabel.setText("Conectando con el token...");
+    private void openProviderAndChooseCertificate(char[] authorization, SigningRequest request) {
+        SigningProvider provider = createSigningProvider();
+        statusLabel.setText("Consultando " + provider.getDisplayName() + "...");
         signBtn.setDisable(true);
         selectBtn.setDisable(true);
 
         Thread worker = new Thread(() -> {
-            TokenProvider provider = new TokenProvider();
             try {
-                provider.login(pin);
-                List<TokenProvider.CertificateChoice> choices = provider.getCertificateChoices();
-                Platform.runLater(() -> openCertificateSelectionModal(provider, choices, request));
-            } catch (Exception e) {
-                provider.logout();
+                provider.open(authorization);
+                List<CertificateChoice> choices = provider.getCertificateChoices();
+                if (!isCurrentSigningAttempt(request)) {
+                    provider.close();
+                    return;
+                }
                 Platform.runLater(() -> {
-                    statusLabel.setText("Error de token: " + e.getMessage());
+                    if (isCurrentSigningAttempt(request)) {
+                        openCertificateSelectionModal(provider, choices, request);
+                    } else {
+                        provider.close();
+                    }
+                });
+            } catch (Exception e) {
+                provider.close();
+                Platform.runLater(() -> {
+                    if (!isCurrentSigningAttempt(request)) {
+                        return;
+                    }
+                    statusLabel.setText("Error al consultar " + provider.getDisplayName() + ": " + e.getMessage());
+                    updateWorkflow(1);
                     signBtn.setDisable(false);
                     selectBtn.setDisable(false);
                 });
+            } finally {
+                if (authorization != null) {
+                    Arrays.fill(authorization, '\0');
+                }
             }
         });
         worker.setDaemon(true);
@@ -869,21 +908,45 @@ public class MainWindow {
             try {
                 worker.join(25_000);
             } catch (InterruptedException ignored) {}
-            if (worker.isAlive()) {
+            if (worker.isAlive() && isCurrentSigningAttempt(request)) {
+                signingAttemptSequence.incrementAndGet();
+                worker.interrupt();
                 Platform.runLater(() -> {
-                    statusLabel.setText("Timeout: token no respondió. Verifique conexión e intente de nuevo.");
+                    statusLabel.setText("Timeout: " + provider.getDisplayName()
+                        + " no respondió. Verifique el dispositivo o almacén e intente de nuevo.");
+                    updateWorkflow(1);
                     signBtn.setDisable(false);
                     selectBtn.setDisable(false);
                 });
-                worker.interrupt();
             }
         });
         timeoutGuard.setDaemon(true);
         timeoutGuard.start();
     }
 
-    private void openCertificateSelectionModal(TokenProvider provider,
-                                                 List<TokenProvider.CertificateChoice> choices,
+    private boolean canWriteSignedOutput(File inputPdf) {
+        Path outputDirectory = inputPdf.toPath().toAbsolutePath().getParent();
+        if (outputDirectory == null || !Files.isDirectory(outputDirectory)) {
+            showAlert("La carpeta del PDF ya no existe. Vuelva a seleccionar el archivo desde una carpeta válida.");
+            return false;
+        }
+        if (!Files.isWritable(outputDirectory)) {
+            showAlert("No tiene permiso para guardar el PDF firmado en: " + outputDirectory);
+            return false;
+        }
+        return true;
+    }
+
+    private SigningProvider createSigningProvider() {
+        return isWindows() ? new WindowsCertificateProvider() : new TokenProvider();
+    }
+
+    private boolean isWindows() {
+        return System.getProperty("os.name", "").startsWith("Windows");
+    }
+
+    private void openCertificateSelectionModal(SigningProvider provider,
+                                                 List<CertificateChoice> choices,
                                                  SigningRequest request) {
         Stage modal = new Stage();
         modal.initModality(Modality.APPLICATION_MODAL);
@@ -899,14 +962,15 @@ public class MainWindow {
         help.setStyle(MODAL_HELP_STYLE);
 
         VBox certificateList = new VBox(SPACE_SMALL);
-        List<TokenProvider.CertificateChoice> orderedChoices = choices.stream()
-            .sorted(Comparator.comparing(choice -> !isCertificateValid(choice.certificate())))
+        List<CertificateChoice> orderedChoices = choices.stream()
+            .sorted(Comparator.comparing(choice -> !certificateAvailability(choice.certificate()).usable()))
             .toList();
         boolean hasValidCertificate = orderedChoices.stream()
-            .anyMatch(choice -> isCertificateValid(choice.certificate()));
-        for (TokenProvider.CertificateChoice choice : orderedChoices) {
-            boolean valid = isCertificateValid(choice.certificate());
-            RadioButton option = new RadioButton(valid ? "Válido" : "Certificado vencido");
+            .anyMatch(choice -> certificateAvailability(choice.certificate()).usable());
+        for (CertificateChoice choice : orderedChoices) {
+            CertificateAvailability availability = certificateAvailability(choice.certificate());
+            boolean valid = availability.usable();
+            RadioButton option = new RadioButton(availability.label());
             option.setToggleGroup(certificateGroup);
             option.setUserData(choice);
             option.setStyle("-fx-font-weight: bold;");
@@ -931,6 +995,11 @@ public class MainWindow {
             certificateList.getChildren().add(card);
         }
 
+        ScrollPane certificateScroll = new ScrollPane(certificateList);
+        certificateScroll.setFitToWidth(true);
+        certificateScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        certificateScroll.setPrefViewportHeight(Math.min(orderedChoices.size() * 145.0, 420));
+
         Button signWithCertificateBtn = new Button("Firmar con este certificado");
         signWithCertificateBtn.setStyle(PRIMARY_BUTTON_STYLE);
         signWithCertificateBtn.setDisable(!hasValidCertificate);
@@ -947,7 +1016,7 @@ public class MainWindow {
                 return;
             }
             try {
-                TokenProvider.CertificateChoice choice = (TokenProvider.CertificateChoice) selected.getUserData();
+                CertificateChoice choice = (CertificateChoice) selected.getUserData();
                 provider.selectKeyAlias(choice.alias());
                 certificateSelected.set(true);
                 modal.close();
@@ -959,14 +1028,14 @@ public class MainWindow {
         cancelBtn.setOnAction(e -> modal.close());
         modal.setOnHidden(e -> {
             if (!certificateSelected.get()) {
-                provider.logout();
+                provider.close();
                 restoreAfterSigningCancellation();
             }
         });
 
         HBox actions = new HBox(SPACE_SMALL, signWithCertificateBtn, cancelBtn);
         actions.setAlignment(Pos.CENTER);
-        VBox root = new VBox(SPACE_NORMAL, cue, heading, help, certificateList, availabilityMessage, actions);
+        VBox root = new VBox(SPACE_NORMAL, cue, heading, help, certificateScroll, availabilityMessage, actions);
         root.setPadding(new Insets(SPACE_SECTION));
         modal.setScene(new Scene(root, 640, Math.min(250 + orderedChoices.size() * 145, 700)));
         modal.showAndWait();
@@ -978,8 +1047,15 @@ public class MainWindow {
             .format(certificate.getNotAfter().toInstant());
     }
 
-    private boolean isCertificateValid(X509Certificate certificate) {
-        return certificate.getNotAfter().toInstant().isAfter(Instant.now());
+    private CertificateAvailability certificateAvailability(X509Certificate certificate) {
+        CertificatePolicy.Status status = CertificatePolicy.evaluate(certificate, Instant.now());
+        return switch (status) {
+            case VALID -> new CertificateAvailability(true, "Válido");
+            case NOT_YET_VALID -> new CertificateAvailability(false, "Certificado todavía no válido");
+            case EXPIRED -> new CertificateAvailability(false, "Certificado vencido");
+            case UNSUPPORTED_ALGORITHM -> new CertificateAvailability(false, "Algoritmo no soportado");
+            case SIGNING_NOT_ALLOWED -> new CertificateAvailability(false, "No permite firma digital");
+        };
     }
 
     private String certificateCardStyle(boolean valid, boolean selected) {
@@ -1010,6 +1086,8 @@ public class MainWindow {
     }
 
     private void restoreAfterSigningCancellation() {
+        signingAttemptSequence.incrementAndGet();
+        clearSigningCredentials();
         updateWorkflow(1);
         previewHelpLabel.setText("La firma fue cancelada.");
         statusLabel.setText("Firma cancelada.");
@@ -1017,15 +1095,22 @@ public class MainWindow {
         selectBtn.setDisable(false);
     }
 
-    private void performSigning(TokenProvider provider, SigningRequest request) {
+    private void performSigning(SigningProvider provider, SigningRequest request) {
         Thread signing = new Thread(() -> {
             try {
+                if (!isCurrentSigningAttempt(request)) {
+                    return;
+                }
                 cert = provider.getCertificate();
+                if (!provider.requiresApplicationPin()) {
+                    Platform.runLater(() -> statusLabel.setText(
+                        "Esperando autorización de Windows para usar la clave privada..."));
+                }
                 privateKey = provider.getPrivateKey();
                 certChain = provider.getCertificateChain();
                 String cn = extractCN(cert.getSubjectX500Principal().getName());
                 Platform.runLater(() -> {
-                    statusLabel.setText("Token verificado: " + cn);
+                    statusLabel.setText("Certificado autorizado: " + cn);
                     redrawPreviewIfAvailable();
                 });
                 String displayName = cn.replaceFirst("\\s+(?=FAU\\b)", "\n");
@@ -1044,8 +1129,11 @@ public class MainWindow {
                     cert, privateKey, certChain,
                     request.reason(), "Puno, Per\u00fa", cn,
                      signerText, request.pages(), request.normalizedPosition(), request.layout(),
-                     (float) STAMP_SAFE_MARGIN_PT, (float) stampTopOverflowPt()
-                    );
+                     (float) STAMP_SAFE_MARGIN_PT, (float) stampTopOverflowPt(),
+                     provider.getSignatureProvider(),
+                     message -> Platform.runLater(() -> statusLabel.setText(message))
+                     );
+                    Platform.runLater(() -> statusLabel.setText("Guardando el PDF firmado..."));
                     Path savedOutput = moveToNextSignedOutput(temporaryOutput, request.inputPdf());
                     Platform.runLater(() -> loadSavedSignedPdf(savedOutput.toFile()));
                 } finally {
@@ -1053,17 +1141,41 @@ public class MainWindow {
                 }
             } catch (Exception e) {
                 Platform.runLater(() -> {
-                    statusLabel.setText("Error de firma: " + e.getMessage());
+                    clearSigningCredentials();
+                    updateWorkflow(1);
+                    redrawPreviewIfAvailable();
+                    statusLabel.setText("Error de firma: " + rootExceptionMessage(e));
                     signBtn.setDisable(false);
                     selectBtn.setDisable(false);
                     e.printStackTrace();
                 });
             } finally {
-                provider.logout();
+                provider.close();
             }
         });
         signing.setDaemon(true);
         signing.start();
+    }
+
+    private boolean isCurrentSigningAttempt(SigningRequest request) {
+        return signingAttemptSequence.get() == request.attemptId();
+    }
+
+    private void clearSigningCredentials() {
+        cert = null;
+        privateKey = null;
+        certChain = null;
+    }
+
+    private String rootExceptionMessage(Exception exception) {
+        Throwable cause = exception;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        String message = cause.getMessage();
+        return message == null || message.isBlank()
+            ? cause.getClass().getSimpleName()
+            : cause.getClass().getSimpleName() + ": " + message;
     }
 
     private void loadSavedSignedPdf(File savedPdf) {
@@ -1087,20 +1199,25 @@ public class MainWindow {
         });
     }
 
-    private Path moveToNextSignedOutput(Path temporaryOutput, File inputPdf) throws java.io.IOException {
+    static Path moveToNextSignedOutput(Path temporaryOutput, File inputPdf) throws java.io.IOException {
         Path inputPath = inputPdf.toPath().toAbsolutePath();
         Path directory = inputPath.getParent();
         String fileName = inputPath.getFileName().toString();
-        String stem = fileName.replaceFirst("(?i)\\.pdf$", "")
-            .replaceFirst(" (?:\\d+ )?\\[FU]$", "");
+        String stem = fileName.replaceFirst("(?i)\\.pdf$", "");
+        Matcher signedOutput = SIGNED_OUTPUT_PATTERN.matcher(stem);
+        int fCount = 1;
+        if (signedOutput.matches()) {
+            stem = signedOutput.group(1);
+            fCount = signedOutput.group(2).length() + 1;
+        }
 
-        for (int number = 1; ; number++) {
-            String suffix = number == 1 ? " [FU].pdf" : " " + number + " [FU].pdf";
+        for (; ; fCount++) {
+            String suffix = " [" + "F".repeat(fCount) + "U].pdf";
             Path output = directory.resolve(stem + suffix);
             try {
                 return Files.move(temporaryOutput, output);
             } catch (FileAlreadyExistsException ignored) {
-                // Try the next sequence number without replacing an existing signed file.
+                // Increase the signature-chain marker without replacing an existing signed file.
             }
         }
     }
@@ -1151,7 +1268,7 @@ public class MainWindow {
         HBox actions = new HBox(SPACE_SMALL, signAgainBtn, revealLocationBtn);
         actions.setAlignment(Pos.CENTER);
 
-        Label tip = new Label("Consejo: puede firmar este PDF varias veces si necesita más firmas.");
+        Label tip = new Label("Consejo: puede firmar este PDF varias veces. Cada nueva firma con token solicitará su PIN.");
         tip.setWrapText(true);
         tip.setStyle("-fx-text-fill: #999; -fx-font-size: 11px;");
         tip.setAlignment(Pos.CENTER);
@@ -1166,7 +1283,8 @@ public class MainWindow {
     }
 
     private void revealDocumentLocation(File savedPdf, Label revealMessage) {
-        if (!System.getProperty("os.name", "").startsWith("Mac")) {
+        boolean macOS = System.getProperty("os.name", "").startsWith("Mac");
+        if (!macOS && !isWindows()) {
             revealMessage.setText("No se pudo mostrar la ubicación del archivo.");
             return;
         }
@@ -1174,8 +1292,11 @@ public class MainWindow {
         Path savedPath = savedPdf.toPath().toAbsolutePath();
         Thread finder = new Thread(() -> {
             try {
-                Process process = new ProcessBuilder("open", "-R", savedPath.toString()).start();
-                if (process.waitFor() != 0) {
+                Process process = macOS
+                    ? new ProcessBuilder("open", "-R", savedPath.toString()).start()
+                    : new ProcessBuilder("explorer.exe", "/select,", savedPath.toString()).start();
+                // Explorer can report a non-zero exit code after handing the request to an existing instance.
+                if (macOS && process.waitFor() != 0) {
                     Platform.runLater(() -> revealMessage.setText("No se pudo mostrar la ubicación del archivo."));
                 }
             } catch (Exception e) {
@@ -1186,9 +1307,11 @@ public class MainWindow {
         finder.start();
     }
 
-    private record SigningRequest(File inputPdf, String reason, String role, List<Integer> pages,
+    private record SigningRequest(long attemptId, File inputPdf, String reason, String role, List<Integer> pages,
                                   PDFSigner.NormalizedStampPosition normalizedPosition,
                                   StampLayout layout) { }
+
+    private record CertificateAvailability(boolean usable, String label) { }
 
     private String extractCN(String dn) {
         for (String part : dn.split(",")) {

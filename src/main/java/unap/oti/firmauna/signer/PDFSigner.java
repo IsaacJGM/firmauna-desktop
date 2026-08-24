@@ -24,6 +24,7 @@ import org.bouncycastle.operator.jcajce.JcaDigestCalculatorProviderBuilder;
 
 import java.io.*;
 import java.security.PrivateKey;
+import java.security.Provider;
 import java.security.Security;
 import java.security.Signature;
 import java.security.cert.X509Certificate;
@@ -31,6 +32,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
 import java.util.List;
+import java.util.function.Consumer;
 
 /**
  * Signs PDFs with detached PKCS#7 signature + optional visual stamp overlay.
@@ -51,7 +53,7 @@ public class PDFSigner {
 
     public enum StampLayout {
         HORIZONTAL(170f, 45f, 6f, 6.5f),
-        VERTICAL(80f, 81f, 5f, 5.5f);
+        VERTICAL(80f, 81f, 6f, 5.5f);
 
         private final float width;
         private final float height;
@@ -113,6 +115,30 @@ public class PDFSigner {
                                String signerText, List<Integer> pages,
                                NormalizedStampPosition normalizedPosition, StampLayout layout,
                                float safeMargin, float topOverflow) throws Exception {
+        signPDF(inputPdf, outputPdf, cert, privateKey, chain, reason, location, contact, signerText,
+            pages, normalizedPosition, layout, safeMargin, topOverflow, null, null);
+    }
+
+    public static void signPDF(File inputPdf, File outputPdf,
+                               X509Certificate cert, PrivateKey privateKey,
+                               java.security.cert.Certificate[] chain,
+                               String reason, String location, String contact,
+                               String signerText, List<Integer> pages,
+                               NormalizedStampPosition normalizedPosition, StampLayout layout,
+                               float safeMargin, float topOverflow,
+                               Provider signatureProvider) throws Exception {
+        signPDF(inputPdf, outputPdf, cert, privateKey, chain, reason, location, contact, signerText,
+            pages, normalizedPosition, layout, safeMargin, topOverflow, signatureProvider, null);
+    }
+
+    public static void signPDF(File inputPdf, File outputPdf,
+                               X509Certificate cert, PrivateKey privateKey,
+                               java.security.cert.Certificate[] chain,
+                               String reason, String location, String contact,
+                               String signerText, List<Integer> pages,
+                               NormalizedStampPosition normalizedPosition, StampLayout layout,
+                               float safeMargin, float topOverflow,
+                               Provider signatureProvider, Consumer<String> progress) throws Exception {
 
         try (PDDocument doc = Loader.loadPDF(inputPdf)) {
             if (pages == null || pages.isEmpty()) {
@@ -132,7 +158,8 @@ public class PDFSigner {
             signature.setContactInfo(contact);
             signature.setSignDate(Calendar.getInstance());
 
-            SignerImpl signer = new SignerImpl(cert, privateKey, chain);
+            report(progress, "Preparando la firma digital...");
+            SignerImpl signer = new SignerImpl(cert, privateKey, chain, signatureProvider, progress);
             SignatureOptions signatureOptions = new SignatureOptions();
             signatureOptions.setPreferredSignatureSize(16384);
             doc.addSignature(signature, signer, signatureOptions);
@@ -156,7 +183,18 @@ public class PDFSigner {
                 }
             }
 
-            doc.saveIncremental(new java.io.FileOutputStream(outputPdf));
+            report(progress, "Solicitando la firma criptográfica...");
+            // Windows cannot rename the signed temporary file until PDFBox closes this stream.
+            try (OutputStream output = new FileOutputStream(outputPdf)) {
+                doc.saveIncremental(output);
+            }
+            report(progress, "Firma criptográfica generada.");
+        }
+    }
+
+    private static void report(Consumer<String> progress, String message) {
+        if (progress != null) {
+            progress.accept(message);
         }
     }
 
@@ -341,18 +379,12 @@ public class PDFSigner {
         PDType1Font font = new PDType1Font(Standard14Fonts.FontName.HELVETICA);
         List<StampTextLine> lines = new ArrayList<>();
         for (String sourceLine : signerText.split("\\n")) {
-            float fontSize = fontSizeForLine(sourceLine, layout);
+            float fontSize = layout.getFontSize();
             for (String line : wrapLines(sourceLine, font, fontSize, maxWidth)) {
                 lines.add(new StampTextLine(line, fontSize));
             }
         }
         return lines;
-    }
-
-    private static float fontSizeForLine(String line, StampLayout layout) {
-        return layout == StampLayout.VERTICAL && line.startsWith("Fecha:")
-            ? 4.5f
-            : layout.getFontSize();
     }
 
     private static List<String> wrapLines(String text, PDType1Font font,
@@ -386,12 +418,19 @@ public class PDFSigner {
         private final PrivateKey privateKey;
         private final JcaCertStore certStore;
         private final AlgorithmIdentifier sigAlgId;
+        private final Provider signatureProvider;
+        private final Consumer<String> progress;
 
-        SignerImpl(X509Certificate cert, PrivateKey pk, java.security.cert.Certificate[] chain) throws Exception {
+        SignerImpl(X509Certificate cert, PrivateKey pk, java.security.cert.Certificate[] chain,
+                   Provider signatureProvider, Consumer<String> progress) throws Exception {
             this.cert = cert;
             this.privateKey = pk;
-            this.certStore = new JcaCertStore(Arrays.asList(chain));
+            this.certStore = new JcaCertStore(chain == null || chain.length == 0
+                ? List.of(cert)
+                : Arrays.asList(chain));
             this.sigAlgId = new DefaultSignatureAlgorithmIdentifierFinder().find("SHA256withRSA");
+            this.signatureProvider = signatureProvider;
+            this.progress = progress;
         }
 
         @Override
@@ -421,12 +460,18 @@ public class PDFSigner {
                 @Override
                 public byte[] getSignature() {
                     try {
-                        Signature sig = Signature.getInstance("SHA256withRSA");
+                        Signature sig = signatureProvider == null
+                            ? Signature.getInstance("SHA256withRSA")
+                            : Signature.getInstance("SHA256withRSA", signatureProvider);
+                        report(progress, "Autorizando la clave privada...");
                         sig.initSign(privateKey);
+                        report(progress, "Generando la firma digital...");
                         sig.update(stream.toByteArray());
-                        return sig.sign();
+                        byte[] signature = sig.sign();
+                        report(progress, "Firma digital recibida.");
+                        return signature;
                     } catch (Exception e) {
-                        throw new RuntimeException("Signature generation failed", e);
+                        throw new RuntimeException("No se pudo generar la firma: " + rootMessage(e), e);
                     }
                 }
                 };
@@ -445,6 +490,15 @@ public class PDFSigner {
             } catch (Exception e) {
                 throw new IOException("CMS signing failed", e);
             }
+        }
+
+        private static String rootMessage(Exception exception) {
+            Throwable cause = exception;
+            while (cause.getCause() != null) {
+                cause = cause.getCause();
+            }
+            String message = cause.getMessage();
+            return message == null || message.isBlank() ? cause.getClass().getSimpleName() : message;
         }
     }
 }

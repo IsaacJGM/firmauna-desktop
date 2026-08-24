@@ -2,13 +2,13 @@
 
 FirmaUNA is a desktop application for applying a digital signature and a visible stamp to PDF documents for UNA Puno.
 
-> **Current status:** the repository currently documents and packages macOS ARM64 (Apple Silicon) builds. That package uses ad-hoc signing and is **not notarized**. A Windows package has not been built or verified by this repository.
+> **Current status:** macOS ARM64 packaging remains ad-hoc signed and **not notarized**. Windows certificate-store support is implemented through `Windows-MY`, but a Windows release package and end-to-end production signing remain to be validated.
 
 ## Quick start
 
 1. Open a PDF.
 2. Choose the stamp format and drag the preview to its position.
-3. Select **Firmar PDF**, enter the token PIN, and choose a valid certificate.
+3. Select **Firmar PDF** and choose a valid certificate. macOS requests the token PIN; Windows delegates authorization to the certificate's native provider.
 4. The signed PDF is saved beside the original with the `[FU]` suffix.
 
 ## Documentation
@@ -29,4 +29,5 @@ Do not treat a locally generated DMG as an institutional release artifact withou
 
 - The application does not bundle token middleware. Install and validate the appropriate vendor middleware separately.
 - Do not redistribute PKCS#11 libraries whose provenance or redistribution rights have not been confirmed.
-- The documented `Ver ubicación` action is currently implemented for macOS Finder; verify platform behavior before promising equivalent support elsewhere.
+- Windows reads private-key entries from the current user's `Windows-MY` store through `SunMSCAPI`. A certificate backed by a smartcard still requires that hardware and its driver.
+- FirmaUNA requires its bundled or configured Java 21 runtime. Java 8 required by RENIEC tooling can remain installed alongside it.

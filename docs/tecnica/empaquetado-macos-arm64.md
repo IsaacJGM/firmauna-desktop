@@ -87,7 +87,7 @@ jpackage \
   --app-version 2.1.0 \
   --input target \
   --main-jar firmauna-desktop-2.0.0.jar \
-  --main-class unap.oti.firmauna.MainApp \
+  --main-class unap.oti.firmauna.Launcher \
   --vendor "OTI UNAP" \
   --description "Firma digital PDF - UNA Puno" \
   --runtime-image "$(pwd)/target/runtime-fx" \
@@ -107,7 +107,7 @@ printf '%s\n' \
 'DIR="$(cd "$(dirname "$0")/.." && pwd)"' \
 'RUNTIME="$DIR/app/runtime-fx"' \
 'APP="$DIR/app/firmauna-desktop-2.0.0.jar"' \
-'exec "$RUNTIME/bin/java" --enable-native-access=javafx.graphics --add-modules=jdk.crypto.cryptoki --add-exports=jdk.crypto.cryptoki/sun.security.pkcs11=ALL-UNNAMED -cp "$APP" unap.oti.firmauna.MainApp' \
+'exec "$RUNTIME/bin/java" --enable-native-access=javafx.graphics --add-modules=jdk.crypto.cryptoki --add-exports=jdk.crypto.cryptoki/sun.security.pkcs11=ALL-UNNAMED -cp "$APP" unap.oti.firmauna.Launcher' \
 > target/app/FirmaUNA.app/Contents/MacOS/FirmaUNA
 
 chmod 755 target/app/FirmaUNA.app/Contents/MacOS/FirmaUNA

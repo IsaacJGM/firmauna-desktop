@@ -8,21 +8,25 @@ Seleccione **Seleccionar PDF...** y elija un archivo PDF. Si ya hay un documento
 
 ## No aparecen certificados válidos
 
-Compruebe que el token esté conectado, que el PIN sea correcto y que el middleware del proveedor esté instalado y validado. Los certificados vencidos se muestran, pero están deshabilitados. Si no existe un certificado vigente, FirmaUNA no puede completar la firma.
+En Windows, compruebe en `certmgr.msc` que el certificado esté en **Personal > Certificados** y tenga clave privada. Para una smartcard, confirme que esté conectada y que su controlador funcione. En macOS, compruebe el token, PIN y middleware. Los certificados vencidos, todavía no válidos o incompatibles aparecen deshabilitados.
 
 ## El PIN no funciona o el token no responde
 
 Revise el PIN, la conexión física del token y el middleware instalado. Cancele el proceso y vuelva a intentarlo. No comparta el PIN ni lo registre en documentos de soporte.
 
+## Windows solicita autorización o PIN
+
+La ventana pertenece al proveedor criptográfico de Windows, no a FirmaUNA. Puede aparecer para claves protegidas o smartcards. Si usa un certificado software sin protección adicional, es normal que Windows no muestre una ventana.
+
 ## ¿Dónde se guarda el PDF firmado?
 
-Se guarda en la misma carpeta del PDF abierto. La aplicación usa `base [FU].pdf`; si ese archivo ya existe, usa `base 2 [FU].pdf` y continúa con el siguiente número disponible. No reemplaza archivos existentes.
+Se guarda en la misma carpeta del PDF abierto. La aplicación usa `base [FU].pdf`; al firmar ese resultado usa `base [FFU].pdf`, luego `base [FFFU].pdf`, y así sucesivamente. No reemplaza archivos existentes.
 
-En macOS, **Ver ubicación** muestra el archivo en Finder. Si no funciona, abra manualmente la carpeta del PDF original y localice el nombre con `[FU]`.
+**Ver ubicación** muestra el archivo en Finder o en el Explorador de Windows. Si no funciona, abra manualmente la carpeta del PDF original y localice el nombre con `[FU]`.
 
 ## ¿Puedo firmar el mismo documento otra vez?
 
-Sí. Después de guardar, el resultado se vuelve a abrir en la aplicación. Seleccione **Volver a firmar** para iniciar otra acción de firma. Cada acción de firma genera un archivo nuevo con el siguiente nombre disponible.
+Sí. Después de guardar, el resultado se vuelve a abrir en la aplicación. Seleccione **Volver a firmar** y luego **Firmar PDF** para iniciar otra acción. Cada firma con token solicita el PIN nuevamente y genera el siguiente nombre encadenado disponible.
 
 ## ¿Es seguro usar “Firmar todas las páginas”?
 
@@ -34,4 +38,4 @@ El paquete macOS actual está firmado de forma ad-hoc y no está notarizado por 
 
 ## Siguiente paso
 
-Revise la [guía para firmar un PDF](guia-de-firma.md) y la guía de [certificados, PIN y token](certificados.md).
+Revise la [guía para firmar un PDF](guia-de-firma.md) y la guía de [certificados y autorización](certificados.md).
