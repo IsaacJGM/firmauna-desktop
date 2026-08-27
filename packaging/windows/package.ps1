@@ -1,7 +1,8 @@
 param(
     [ValidateSet("app-image", "exe", "msi")]
     [string]$Type = "app-image",
-    [switch]$Console
+    [switch]$Console,
+    [string]$WiXPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +22,13 @@ if (-not $env:JAVA_HOME) {
 $javaVersion = & (Join-Path $env:JAVA_HOME "bin\javac.exe") -version
 if ($javaVersion -notmatch '^javac 21\.') {
     throw "FirmaUNA Windows packaging requires JDK 21."
+}
+
+if ($WiXPath) {
+    if (-not (Test-Path -LiteralPath (Join-Path $WiXPath "candle.exe"))) {
+        throw "WiXPath does not contain candle.exe: $WiXPath"
+    }
+    $env:PATH = $WiXPath + ";" + $env:PATH
 }
 
 $maven = (Get-Command mvn.cmd -ErrorAction Stop).Source
