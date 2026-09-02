@@ -3,6 +3,7 @@ package unap.oti.firmauna.ui;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.geometry.Rectangle2D;
 import javafx.scene.Scene;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
@@ -30,6 +31,7 @@ import javafx.scene.text.Font;
 import javafx.scene.text.TextAlignment;
 import javafx.stage.FileChooser;
 import javafx.stage.Modality;
+import javafx.stage.Screen;
 import javafx.stage.Stage;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -91,6 +93,7 @@ public class MainWindow {
         "-fx-text-fill: #555; -fx-font-size: 12px;";
 
     private final Stage stage;
+    private boolean compact;
     private final Label statusLabel = new Label("Seleccione un PDF para firmar.");
     private final ComboBox<String> reasonCombo = new ComboBox<>();
     private final TextField roleField = new TextField();
@@ -147,8 +150,8 @@ public class MainWindow {
     public MainWindow(Stage stage) {
         this.stage = stage;
         stage.setTitle("FirmaUNA");
-        stage.setMinWidth(1050);
-        stage.setMinHeight(760);
+        stage.setMinWidth(640);
+        stage.setMinHeight(480);
 
         reasonCombo.getItems().addAll(
             "Soy el autor del documento",
@@ -177,35 +180,44 @@ public class MainWindow {
         });
 
         setupCanvasDrag();
+
+        canvas.widthProperty().addListener((observable, oldWidth, newWidth) -> handlePreviewAreaResized());
+        canvas.heightProperty().addListener((observable, oldHeight, newHeight) -> handlePreviewAreaResized());
     }
 
     public void show() {
-        stage.setScene(new Scene(buildRoot(), 1100, 820));
+        Rectangle2D bounds = Screen.getPrimary().getVisualBounds();
+        compact = bounds.getHeight() < 720;
+        double width = Math.min(1100, Math.max(760, Math.round(bounds.getWidth() * 0.90)));
+        double height = Math.min(820, Math.max(560, Math.round(bounds.getHeight() * 0.86)));
+        stage.setScene(new Scene(buildRoot(), width, height));
+        stage.setX(bounds.getMinX() + (bounds.getWidth() - width) / 2);
+        stage.setY(bounds.getMinY() + (bounds.getHeight() - height) / 2);
         stage.show();
     }
 
     private VBox buildRoot() {
         HBox header = new HBox();
-        header.setStyle("-fx-background-color: #306080; -fx-padding: 12 16;");
+        header.setStyle("-fx-background-color: #306080; -fx-padding: " + (compact ? "8 10" : "12 16") + ";");
         header.setAlignment(Pos.CENTER_LEFT);
 
         ImageView headerLogo = new ImageView(new Image(
             getClass().getResourceAsStream("/assets/unapicono.png")));
-        headerLogo.setFitHeight(40);
+        headerLogo.setFitHeight(compact ? 32 : 40);
         headerLogo.setPreserveRatio(true);
         headerLogo.setSmooth(true);
 
         Label title = new Label("FirmaUNA");
-        title.setStyle("-fx-text-fill: white; -fx-font-size: 22px; -fx-font-weight: bold;");
+        title.setStyle("-fx-text-fill: white; -fx-font-size: " + (compact ? "18px" : "22px") + "; -fx-font-weight: bold;");
         Label subtitleLbl = new Label("Firma Digital · UNA Puno");
-        subtitleLbl.setStyle("-fx-text-fill: #b0c4de; -fx-font-size: 11px;");
+        subtitleLbl.setStyle("-fx-text-fill: #b0c4de; -fx-font-size: " + (compact ? "10px" : "11px") + ";");
 
         HBox titleGroup = new HBox(10, headerLogo, new VBox(2, title, subtitleLbl));
         titleGroup.setAlignment(Pos.CENTER_LEFT);
         header.getChildren().addAll(titleGroup);
 
         SplitPane split = new SplitPane();
-        split.setDividerPositions(0.62);
+        split.setDividerPositions(compact ? 0.55 : 0.62);
 
         // LEFT: preview + page navigation
         VBox left = new VBox(8);
@@ -229,13 +241,17 @@ public class MainWindow {
         previewHelpLabel.setAlignment(Pos.CENTER);
         previewHelpLabel.setStyle("-fx-text-fill: #555; -fx-font-size: 11px; -fx-padding: 2 8 4 8;");
 
-        VBox.setVgrow(canvas, Priority.ALWAYS);
-        left.getChildren().addAll(canvas, nav, previewHelpLabel);
+        javafx.scene.layout.StackPane previewPane = new javafx.scene.layout.StackPane(canvas);
+        previewPane.setStyle("-fx-background-color: #e8e8e8;");
+        VBox.setVgrow(previewPane, Priority.ALWAYS);
+        canvas.widthProperty().bind(previewPane.widthProperty());
+        canvas.heightProperty().bind(previewPane.heightProperty());
+        left.getChildren().addAll(previewPane, nav, previewHelpLabel);
 
         // RIGHT: controls (no PIN field; PIN is requested in a modal on Firmar)
         VBox controls = new VBox(SPACE_NORMAL);
-        controls.setPadding(new Insets(SPACE_NORMAL));
-        controls.setMinWidth(300);
+        controls.setPadding(new Insets(compact ? 12 : SPACE_NORMAL));
+        controls.setMinWidth(compact ? 270 : 300);
 
         selectBtn.setMaxWidth(Double.MAX_VALUE);
         selectBtn.setStyle(SECONDARY_BUTTON_STYLE);
@@ -257,7 +273,7 @@ public class MainWindow {
         verticalLayout.setUserData(StampLayout.VERTICAL);
         horizontalLayout.setStyle(selectedLayoutCardStyle());
         HBox layoutChoices = new HBox(10, horizontalLayout, verticalLayout);
-        signAllPagesCheckBox.setStyle("-fx-font-size: 11px;");
+        signAllPagesCheckBox.setStyle("-fx-font-size: 11px; -fx-text-fill: #334155;");
         Label allPagesHelp = new Label("La misma posición se aplicará en todas las páginas.");
         allPagesHelp.setStyle("-fx-text-fill: #777; -fx-font-size: 10px;");
         allPagesHelp.setWrapText(true);
@@ -306,10 +322,15 @@ public class MainWindow {
             actionsSection
         );
 
-        split.getItems().addAll(left, controls);
+        ScrollPane controlsScroll = new ScrollPane(controls);
+        controlsScroll.setFitToWidth(true);
+        controlsScroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        controlsScroll.setStyle("-fx-background-color: transparent; -fx-background: transparent;");
+
+        split.getItems().addAll(left, controlsScroll);
 
         HBox footer = new HBox(new Label("OTI — Subunidad de Gobierno Electrónico — UNA Puno"));
-        footer.setStyle("-fx-background-color: #f0f0f0; -fx-padding: 8px;");
+        footer.setStyle("-fx-background-color: #f0f0f0; -fx-padding: " + (compact ? "6px" : "8px") + ";");
         footer.setAlignment(Pos.CENTER);
 
         VBox root = new VBox(header, split, footer);
@@ -373,18 +394,20 @@ public class MainWindow {
         card.setUserData(layout);
         card.setContentDisplay(ContentDisplay.TOP);
         card.setGraphic(createMiniLayoutPreview(vertical));
-        card.setPrefSize(130, 92);
-        card.setMinSize(130, 92);
-        card.setMaxSize(130, 92);
+        double cardSize = compact ? 104 : 130;
+        double cardHeight = compact ? 74 : 92;
+        card.setPrefSize(cardSize, cardHeight);
+        card.setMinSize(cardSize, cardHeight);
+        card.setMaxSize(cardSize, cardHeight);
         card.setStyle(layoutCardStyle());
         return card;
     }
 
     private javafx.scene.Node createMiniLayoutPreview(boolean vertical) {
         Label logo = new Label("LOGO");
-        logo.setStyle("-fx-background-color: #e7eef8; -fx-border-color: #8aa9cf; -fx-padding: 4px; -fx-font-size: 9px;");
+        logo.setStyle("-fx-background-color: #e7eef8; -fx-border-color: #8aa9cf; -fx-padding: 4px; -fx-font-size: 9px; -fx-text-fill: #334155;");
         Label text = new Label("Texto\nFirma");
-        text.setStyle("-fx-background-color: #f4f4f4; -fx-border-color: #bbb; -fx-padding: 3px; -fx-font-size: 8px;");
+        text.setStyle("-fx-background-color: #f4f4f4; -fx-border-color: #bbb; -fx-padding: 3px; -fx-font-size: 8px; -fx-text-fill: #334155;");
 
         if (vertical) {
             VBox preview = new VBox(3, logo, text);
@@ -399,12 +422,14 @@ public class MainWindow {
 
     private String layoutCardStyle() {
         return "-fx-background-color: white; -fx-border-color: #c8c8c8; -fx-border-width: 1px; " +
-            "-fx-border-radius: 5px; -fx-background-radius: 5px; -fx-padding: 6px;";
+            "-fx-border-radius: 5px; -fx-background-radius: 5px; -fx-padding: 6px; " +
+            "-fx-text-fill: #1f2937;";
     }
 
     private String selectedLayoutCardStyle() {
         return "-fx-background-color: #eef5ff; -fx-border-color: #306080; -fx-border-width: 2px; " +
-            "-fx-border-radius: 5px; -fx-background-radius: 5px; -fx-padding: 6px;";
+            "-fx-border-radius: 5px; -fx-background-radius: 5px; -fx-padding: 6px; " +
+            "-fx-text-fill: #1f2937;";
     }
 
     // ---------- PDF loading & rendering ----------
@@ -537,17 +562,8 @@ public class MainWindow {
                 ImageIO.write(bi, "png", baos);
                 Image fxImage = new Image(new ByteArrayInputStream(baos.toByteArray()));
 
-                double sw = canvas.getWidth() / fxImage.getWidth();
-                double sh = canvas.getHeight() / fxImage.getHeight();
-                canvasScale = Math.min(sw, sh);
-                double w = fxImage.getWidth() * canvasScale;
-                double h = fxImage.getHeight() * canvasScale;
-                offsetX = (canvas.getWidth() - w) / 2;
-                offsetY = (canvas.getHeight() - h) / 2;
-                pdfToCanvasScaleX = w / pdfPageW;
-                pdfToCanvasScaleY = h / pdfPageH;
-
-                updateBoxDimensions();
+                pageImage = fxImage;
+                computePreviewLayout();
 
                 // Default position: bottom-right of the visible page (resets per page)
                 if (!dragging) {
@@ -556,8 +572,8 @@ public class MainWindow {
                 }
                 clampBoxToPage();
 
-                pageImage = fxImage;
-                double imgW = w, imgH = h;
+                double imgW = pageImage.getWidth() * canvasScale;
+                double imgH = pageImage.getHeight() * canvasScale;
                 Platform.runLater(() -> {
                     gc.clearRect(0, 0, canvas.getWidth(), canvas.getHeight());
                     gc.setFill(Color.web("#e8e8e8"));
@@ -573,6 +589,28 @@ public class MainWindow {
                 });
             }
         }).start();
+    }
+
+    private void computePreviewLayout() {
+        double sw = canvas.getWidth() / pageImage.getWidth();
+        double sh = canvas.getHeight() / pageImage.getHeight();
+        canvasScale = Math.min(sw, sh);
+        double w = pageImage.getWidth() * canvasScale;
+        double h = pageImage.getHeight() * canvasScale;
+        offsetX = (canvas.getWidth() - w) / 2;
+        offsetY = (canvas.getHeight() - h) / 2;
+        pdfToCanvasScaleX = w / pdfPageW;
+        pdfToCanvasScaleY = h / pdfPageH;
+        updateBoxDimensions();
+    }
+
+    private void handlePreviewAreaResized() {
+        if (canvas.getWidth() <= 0 || canvas.getHeight() <= 0 || currentDoc == null || pageImage == null) {
+            return;
+        }
+        computePreviewLayout();
+        clampBoxToPage();
+        redrawBoxOnly();
     }
 
     private void drawBox() {
@@ -679,8 +717,8 @@ public class MainWindow {
         if (pageImage != null) {
             gc.drawImage(pageImage, offsetX, offsetY,
                 pageImage.getWidth() * canvasScale, pageImage.getHeight() * canvasScale);
+            drawBox();
         }
-        drawBox();
     }
 
     private StampLayout selectedStampLayout() {
@@ -1037,7 +1075,11 @@ public class MainWindow {
         actions.setAlignment(Pos.CENTER);
         VBox root = new VBox(SPACE_NORMAL, cue, heading, help, certificateScroll, availabilityMessage, actions);
         root.setPadding(new Insets(SPACE_SECTION));
-        modal.setScene(new Scene(root, 640, Math.min(250 + orderedChoices.size() * 145, 700)));
+        Rectangle2D screen = Screen.getPrimary().getVisualBounds();
+        double modalWidth = Math.min(640, Math.max(420, screen.getWidth() - 32));
+        double modalHeight = Math.min(250 + orderedChoices.size() * 145.0, 700);
+        modalHeight = Math.max(320, Math.min(modalHeight, screen.getHeight() - 64));
+        modal.setScene(new Scene(root, modalWidth, modalHeight));
         modal.showAndWait();
     }
 
