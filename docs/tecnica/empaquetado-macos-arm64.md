@@ -17,11 +17,15 @@ Verify the machine and Java architecture:
 ```bash
 uname -m
 export JAVA_HOME=$(/usr/libexec/java_home -v 25)
-java -version
+"$JAVA_HOME/bin/java" -version
 file "$JAVA_HOME/bin/java"
+test -x "$JAVA_HOME/bin/jlink" && echo "jlink ready"
+test -x "$JAVA_HOME/bin/jpackage" && echo "jpackage ready"
 ```
 
-`uname -m` and the Java executable must report `arm64`.
+`uname -m` and the Java executable must report `arm64`. Both readiness checks must print their `ready` message.
+
+> Run the `export JAVA_HOME=...` command again whenever you open a new Terminal window. If `JAVA_HOME` is empty, `"$JAVA_HOME/bin/jlink"` resolves incorrectly to `/bin/jlink`.
 
 ## Build the application
 
@@ -81,7 +85,7 @@ rm -rf target/runtime-fx target/app target/dmg-staging
 The repository icon is `packaging/macos/FirmaUNA.icns`.
 
 ```bash
-jpackage \
+"$JAVA_HOME/bin/jpackage" \
   --type app-image \
   --name FirmaUNA \
   --app-version 2.1.0 \
@@ -98,6 +102,25 @@ jpackage \
   --mac-app-category public.app-category.utilities \
   --dest target/app
 ```
+
+### Troubleshoot a missing runtime image
+
+If the Terminal reports `zsh: no such file or directory: /bin/jlink`, restore and verify `JAVA_HOME` before repeating the runtime step:
+
+```bash
+export JAVA_HOME=$(/usr/libexec/java_home -v 25)
+echo "$JAVA_HOME"
+file "$JAVA_HOME/bin/java"
+file "$JAVA_HOME/bin/jlink"
+```
+
+Do not run `jpackage` until this command succeeds and reports `arm64`:
+
+```bash
+file target/runtime-fx/bin/java
+```
+
+If `jpackage` reports that `target/runtime-fx` does not exist, the `jlink` step did not complete successfully. Fix that error and recreate the runtime before continuing.
 
 Install the launcher:
 
